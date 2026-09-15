@@ -1,0 +1,812 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shipyard — Phase Graph Monitor</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #121a2b;
+    --panel-border: #1f2a42;
+    --text: #e6edf7;
+    --text-dim: #8ea0bd;
+    --pending: #475269;
+    --running: #3b82f6;
+    --succeeded: #22c55e;
+    --failed: #ef4444;
+    --edge-fwd: #3d4c6b;
+    --edge-retry: #c2761b;
+    --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 16px;
+    margin: 0;
+    white-space: nowrap;
+  }
+  header h1 .dot {
+    color: var(--accent);
+  }
+  select, button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  #sessionSelect { min-width: 340px; }
+  #statusBadge {
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .badge-running { background: #1d3a63; color: #7fb2ff; }
+  .badge-completed { background: #123a24; color: #4ade80; }
+  .badge-failed_needs_human { background: #3a2712; color: #fbbf24; }
+  .badge-failed { background: #3a1414; color: #f87171; }
+  .badge-unknown { background: #2a2a2a; color: #aaa; }
+
+  #autoRefreshLabel { color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 16px;
+    padding: 16px 20px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin: 0 0 10px 0;
+  }
+
+  #graphPanel { overflow-x: auto; }
+  #graphSvg { width: 100%; min-width: 820px; height: auto; display: block; }
+
+  .node-box { fill: var(--panel); stroke: var(--pending); stroke-width: 2; transition: stroke 0.3s, fill 0.3s; }
+  .node-box.status-running { stroke: var(--running); }
+  .node-box.status-succeeded { stroke: var(--succeeded); }
+  .node-box.status-failed { stroke: var(--failed); }
+  .node-box.current { filter: drop-shadow(0 0 6px var(--running)); }
+  .node-box.status-running.current { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { stroke-width: 2; }
+    50% { stroke-width: 4; }
+  }
+  .node-label { fill: var(--text); font-size: 13px; font-weight: 600; text-anchor: middle; }
+  .node-kind { fill: var(--text-dim); font-size: 10px; text-anchor: middle; text-transform: uppercase; letter-spacing: 0.04em; }
+  .node-attempts { fill: var(--text-dim); font-size: 10px; text-anchor: middle; }
+  .status-dot { r: 5; }
+  .status-dot.status-pending { fill: var(--pending); }
+  .status-dot.status-running { fill: var(--running); }
+  .status-dot.status-succeeded { fill: var(--succeeded); }
+  .status-dot.status-failed { fill: var(--failed); }
+
+  .edge-path { fill: none; stroke: var(--edge-fwd); stroke-width: 1.6; }
+  .edge-path.retry { stroke: var(--edge-retry); stroke-dasharray: 5 4; }
+  .edge-label { fill: var(--text-dim); font-size: 10px; text-anchor: middle; }
+  .edge-label.retry { fill: var(--edge-retry); }
+  .pulse-dot { fill: var(--accent); filter: drop-shadow(0 0 4px var(--accent)); }
+
+  #progressWrap { margin-bottom: 14px; }
+  #progressText { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+  #progressBarOuter { background: #1a2338; border-radius: 999px; height: 10px; overflow: hidden; }
+  #progressBarInner { background: linear-gradient(90deg, #3b82f6, #22c55e); height: 100%; width: 0%; transition: width 0.4s ease; }
+
+  table.kv { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.kv td { padding: 4px 0; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+  table.kv td:first-child { color: var(--text-dim); width: 40%; white-space: nowrap; }
+
+  #budgetsPanel table.kv td:first-child { width: 60%; }
+
+  #logPanel { max-height: 260px; overflow-y: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+  .log-line { padding: 3px 0; border-bottom: 1px solid #1a2338; display: flex; gap: 8px; }
+  .log-line .t { color: var(--text-dim); white-space: nowrap; }
+  .log-line .ty { font-weight: 600; white-space: nowrap; }
+  .log-line .ty.NODE_STARTED { color: var(--running); }
+  .log-line .ty.NODE_SUCCEEDED { color: var(--succeeded); }
+  .log-line .ty.NODE_FAILED { color: var(--failed); }
+  .log-line .ty.ROUTE_TAKEN { color: var(--edge-retry); }
+  .log-line .ty.ROUTE_BUDGET_EXHAUSTED { color: var(--failed); }
+  .log-line .ty.GRAPH_SNAPSHOT { color: var(--accent); }
+  .log-line .ty.RUN_RESUMED { color: var(--accent); }
+  .log-line .ty.RUN_FINISHED { color: var(--text); }
+  .log-line.new { animation: flash 1.2s ease; }
+  @keyframes flash { 0% { background: #23324f; } 100% { background: transparent; } }
+
+  #reportPanel .issue { margin: 4px 0 4px 16px; }
+  #reportPanel .files { color: var(--text-dim); font-size: 12px; }
+  #reportPanel pre { white-space: pre-wrap; word-break: break-word; font-size: 11.5px; background: #0e1626; padding: 8px; border-radius: 6px; max-height: 160px; overflow-y: auto; }
+
+  .empty { color: var(--text-dim); font-style: italic; }
+  .section-gap { margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="dot">●</span> Shipyard <span style="color:var(--text-dim); font-weight: 400;">— Phase Graph Monitor</span></h1>
+  <select id="sessionSelect"></select>
+  <span id="statusBadge" class="badge-unknown">—</span>
+  <button id="refreshBtn">Refresh now</button>
+  <label id="autoRefreshLabel">
+    <input type="checkbox" id="autoRefreshToggle" checked /> Auto-refresh
+  </label>
+</header>
+
+<main>
+  <div>
+    <div class="panel" id="graphPanel">
+      <h2>Phase graph</h2>
+      <div id="progressWrap">
+        <div id="progressText"><span id="progressLabel">—</span><span id="progressPct">0%</span></div>
+        <div id="progressBarOuter"><div id="progressBarInner"></div></div>
+      </div>
+      <svg id="graphSvg" viewBox="0 0 1420 500" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-fwd)"></path>
+          </marker>
+          <marker id="arrowRetry" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-retry)"></path>
+          </marker>
+        </defs>
+        <g id="edgesLayer"></g>
+        <g id="nodesLayer"></g>
+        <g id="pulseLayer"></g>
+      </svg>
+    </div>
+
+    <div class="panel section-gap" id="logPanelWrap">
+      <h2>Event trace (append-only)</h2>
+      <div id="logPanel"><div class="empty">No session selected.</div></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel" id="budgetsPanel">
+      <h2>Retry budgets</h2>
+      <table class="kv" id="budgetsTable"><tr><td colspan="2" class="empty">—</td></tr></table>
+    </div>
+
+    <div class="panel section-gap" id="resumePanel">
+      <h2>Resume</h2>
+      <div id="resumeUnavailable" class="empty">Not resumable — this run is still in progress or already finished.</div>
+      <div id="resumeControls" hidden>
+        <p style="margin: 0 0 10px 0; color: var(--text-dim); font-size: 12px;">
+          Plain resume continues where it left off. To grant extra retries
+          on an exhausted budget, pick one below — this never edits
+          <code>graph.py</code>, it's a logged, per-session top-up.
+        </p>
+        <table class="kv">
+          <tr><td>Budget to grant (optional)</td><td>
+            <select id="grantKey"><option value="">— none —</option></select>
+          </td></tr>
+          <tr><td>Extra uses</td><td><input id="grantAmount" type="number" min="1" value="2" style="width:70px;" /></td></tr>
+          <tr><td>Reason (required if granting)</td><td><input id="grantReason" type="text" placeholder="e.g. unblock the demo" style="width:100%;" /></td></tr>
+          <tr><td>Granted by (optional)</td><td><input id="grantedBy" type="text" placeholder="your name" style="width:100%;" /></td></tr>
+        </table>
+        <div style="margin-top: 10px; display:flex; gap: 8px;">
+          <button id="resumeBtn">Resume</button>
+        </div>
+        <div id="resumeStatus" style="margin-top: 8px; font-size: 12px; color: var(--text-dim);"></div>
+      </div>
+    </div>
+
+    <div class="panel section-gap" id="reportPanel">
+      <h2>Report</h2>
+      <div id="reportBody"><div class="empty">Available once the run finishes.</div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = "";
+
+// ---------------------------------------------------------------------
+// Static layout for the known 8-node graph. Positions are hand-placed
+// (the graph is fixed-shape by design — see graph.py's module docstring)
+// so retry loops read as clean curves instead of a generic auto-layout
+// fighting the topology. Any node id not in this map falls back to a
+// simple overflow row so the page never breaks against a changed graph.
+// ---------------------------------------------------------------------
+const POS = {
+  plan:        {x:   70, y: 80, w: 130, h: 56},  // 70   -> 200
+  build:       {x:  260, y: 80, w: 130, h: 56},  // 260  -> 390
+  verify:      {x:  450, y: 80, w: 130, h: 56},  // 450  -> 580
+  test_gate:   {x:  640, y: 80, w: 130, h: 56},  // 640  -> 770
+  review:      {x:  830, y: 80, w: 130, h: 56},  // 830  -> 960
+  review_gate: {x: 1020, y: 80, w: 150, h: 56},  // 1020 -> 1170
+  calibrate:   {x: 1230, y: 80, w: 130, h: 56},  // 1230 -> 1360 (60px clear of review_gate)
+  arbiter:     {x:  640, y: 250, w: 130, h: 56}, // centered under test_gate
+};
+const CANVAS_W = 1420;
+
+let FALLBACK_ROW = 0;
+function posFor(id) {
+  if (POS[id]) return POS[id];
+  FALLBACK_ROW += 1;
+  return {x: 40 + (FALLBACK_ROW - 1) * 160, y: 400, w: 130, h: 50};
+}
+
+function cx(p) { return p.x + p.w / 2; }
+function cy(p) { return p.y + p.h / 2; }
+
+// ---------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------
+let state = {
+  sessionId: null,
+  graphNodes: null,        // {id: {kind, next, on_fail, routes}} from GRAPH_SNAPSHOT
+  lastEventCount: 0,
+  lastStartedNode: null,
+  pollTimer: null,
+  edgeElByKey: {},         // "from|to" -> path element, for pulse animation
+};
+
+const CORE_PATH = ["plan", "build", "verify", "test_gate", "review", "review_gate", "calibrate"];
+
+// ---------------------------------------------------------------------
+// Fetch helpers
+// ---------------------------------------------------------------------
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " -> " + r.status);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------
+// Session list
+// ---------------------------------------------------------------------
+async function loadSessions(preserveSelection) {
+  const sessions = await getJSON(`${API}/sessions`);
+  sessions.sort((a, b) => b.started_at - a.started_at);
+  const sel = document.getElementById("sessionSelect");
+  const prev = preserveSelection ? sel.value : null;
+  sel.innerHTML = "";
+  for (const s of sessions) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    const started = new Date(s.started_at * 1000).toLocaleString();
+    opt.textContent = `${s.id}  ·  ${s.status}  ·  ${s.project_path}  ·  ${started}`;
+    sel.appendChild(opt);
+  }
+  if (prev && sessions.some(s => s.id === prev)) {
+    sel.value = prev;
+  } else if (sessions.length) {
+    sel.value = sessions[0].id;
+  }
+  return sel.value || null;
+}
+
+// ---------------------------------------------------------------------
+// Graph rendering (shell)
+// ---------------------------------------------------------------------
+function edgeKey(a, b) { return a + "|" + b; }
+
+function drawGraphShell(graphNodes) {
+  state.graphNodes = graphNodes;
+  state.edgeElByKey = {};
+  FALLBACK_ROW = 0;
+
+  const edgesLayer = document.getElementById("edgesLayer");
+  const nodesLayer = document.getElementById("nodesLayer");
+  edgesLayer.innerHTML = "";
+  nodesLayer.innerHTML = "";
+
+  const ids = Object.keys(graphNodes);
+  // ensure fallback positions are stable across redraws for unknown nodes
+  for (const id of ids) posFor(id);
+
+  // --- edges ---
+  // Multiple classifications can target the same node (e.g. both spec_gap
+  // and ambiguity route arbiter -> plan) — those would compute identical
+  // geometry and draw as perfectly overlapping lines with stacked,
+  // illegible labels. Group by target first and draw ONE edge per
+  // (from, to) pair with a combined label; this also matches how
+  // animateEdge works, which only cares about the node pair, not which
+  // classification triggered the transition.
+  for (const id of ids) {
+    const spec = graphNodes[id];
+    const from = posFor(id);
+    const byTarget = new Map(); // to -> {labels: [], retry: bool}
+
+    const addEdge = (to, label, retry) => {
+      const entry = byTarget.get(to) || {labels: [], retry: false};
+      if (label) entry.labels.push(label);
+      entry.retry = entry.retry || retry;
+      byTarget.set(to, entry);
+    };
+    if (spec.next) addEdge(spec.next, null, false);
+    if (spec.on_fail) addEdge(spec.on_fail.target, "fail", true);
+    if (spec.routes) {
+      for (const [label, route] of Object.entries(spec.routes)) addEdge(route.target, label, true);
+    }
+
+    for (const [to, entry] of byTarget.entries()) {
+      const toPos = posFor(to);
+      const path = buildEdgePath(id, to, from, toPos);
+      const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      pathEl.setAttribute("d", path);
+      pathEl.setAttribute("class", "edge-path" + (entry.retry ? " retry" : ""));
+      pathEl.setAttribute("marker-end", entry.retry ? "url(#arrowRetry)" : "url(#arrow)");
+      edgesLayer.appendChild(pathEl);
+      state.edgeElByKey[edgeKey(id, to)] = pathEl;
+
+      if (entry.labels.length) {
+        const mid = pointOnPath(pathEl, 0.5);
+        const labelEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        labelEl.setAttribute("x", mid.x);
+        labelEl.setAttribute("y", mid.y - 6);
+        labelEl.setAttribute("class", "edge-label" + (entry.retry ? " retry" : ""));
+        labelEl.textContent = entry.labels.join(" / ");
+        edgesLayer.appendChild(labelEl);
+      }
+    }
+  }
+
+  // --- nodes (drawn after edges so they sit on top) ---
+  for (const id of ids) {
+    const spec = graphNodes[id];
+    const p = posFor(id);
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.setAttribute("id", "node-" + id);
+
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", p.x);
+    rect.setAttribute("y", p.y);
+    rect.setAttribute("width", p.w);
+    rect.setAttribute("height", p.h);
+    rect.setAttribute("rx", 10);
+    rect.setAttribute("class", "node-box status-pending");
+    g.appendChild(rect);
+
+    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("cx", p.x + 14);
+    dot.setAttribute("cy", p.y + 14);
+    dot.setAttribute("class", "status-dot status-pending");
+    g.appendChild(dot);
+
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", cx(p));
+    label.setAttribute("y", p.y + 26);
+    label.setAttribute("class", "node-label");
+    label.textContent = id;
+    g.appendChild(label);
+
+    const kind = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    kind.setAttribute("x", cx(p));
+    kind.setAttribute("y", p.y + 40);
+    kind.setAttribute("class", "node-kind");
+    kind.textContent = spec.kind;
+    g.appendChild(kind);
+
+    const attempts = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    attempts.setAttribute("x", cx(p));
+    attempts.setAttribute("y", p.y + 52);
+    attempts.setAttribute("class", "node-attempts");
+    attempts.textContent = "";
+    g.appendChild(attempts);
+
+    nodesLayer.appendChild(g);
+  }
+}
+
+// Path SHAPE is chosen purely from relative position, independent of the
+// "retry" flag (which only controls color/dash). A gate's on_fail edge to
+// a classifier straight below it (test_gate -> arbiter) is a short "drop",
+// not a loop — only an edge that actually goes backward in the main
+// left-to-right flow (arbiter -> build, review_gate -> build, etc.) should
+// get the big loop-below-everything curve.
+// A loop that starts and ends on the main chain's row (e.g. review_gate ->
+// build) must still dip below any node sitting in between on a lower row
+// (arbiter) — otherwise the curve draws straight through it. Every loop
+// clears at least this far down, regardless of where it starts.
+const LOOP_CLEARANCE = (POS.arbiter ? POS.arbiter.y + POS.arbiter.h : 80) + 34;
+
+function buildEdgePath(fromId, toId, from, to) {
+  if (to.x < from.x - 4) {
+    // backward: loop below everything spanned by the two nodes
+    const sx = from.x + from.w * 0.25, sy = from.y + from.h;
+    const ex = to.x + to.w * 0.75, ey = to.y + to.h;
+    const naturalDropY = Math.max(sy, ey) + 60 + Math.min(140, Math.abs(sx - ex) * 0.15);
+    const dropY = Math.max(naturalDropY, LOOP_CLEARANCE);
+    return `M ${sx},${sy} C ${sx},${dropY} ${ex},${dropY} ${ex},${ey}`;
+  }
+  if (Math.abs(to.x - from.x) < 4 && to.y !== from.y) {
+    // vertical: same column, different row — offset sideways so a
+    // downward edge and an upward edge between the same two nodes
+    // (e.g. test_gate->arbiter "fail" and arbiter->test_gate "noise")
+    // don't sit exactly on top of each other
+    const goingDown = to.y > from.y;
+    const offset = goingDown ? -18 : 18;
+    const sx = cx(from) + offset, sy = goingDown ? from.y + from.h : from.y;
+    const ex = cx(to) + offset, ey = goingDown ? to.y : to.y + to.h;
+    return `M ${sx},${sy} L ${ex},${ey}`;
+  }
+  // forward: straight side-to-side (or gently diagonal) line
+  const sx = from.x + from.w, sy = cy(from);
+  const ex = to.x, ey = cy(to);
+  return `M ${sx},${sy} L ${ex},${ey}`;
+}
+
+// approximate midpoint of an SVG path (works for any path via getPointAtLength)
+function pointOnPath(pathEl, t) {
+  const len = pathEl.getTotalLength();
+  return pathEl.getPointAtLength(len * t);
+}
+
+// ---------------------------------------------------------------------
+// Node status updates + pulse animation along an edge
+// ---------------------------------------------------------------------
+function setNodeStatus(id, status, attempts, isCurrent) {
+  const g = document.getElementById("node-" + id);
+  if (!g) return;
+  const rect = g.querySelector(".node-box");
+  const dot = g.querySelector(".status-dot");
+  const attemptsEl = g.querySelector(".node-attempts");
+  rect.setAttribute("class", "node-box status-" + status + (isCurrent ? " current" : ""));
+  dot.setAttribute("class", "status-dot status-" + status);
+  attemptsEl.textContent = attempts > 1 ? `attempt ${attempts}` : "";
+}
+
+function animateEdge(fromId, toId) {
+  const key = edgeKey(fromId, toId);
+  const pathEl = state.edgeElByKey[key];
+  if (!pathEl) return;
+  const pulseLayer = document.getElementById("pulseLayer");
+  const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  circle.setAttribute("r", 5);
+  circle.setAttribute("class", "pulse-dot");
+  const anim = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
+  anim.setAttribute("dur", "0.9s");
+  anim.setAttribute("fill", "freeze");
+  anim.setAttribute("path", pathEl.getAttribute("d"));
+  circle.appendChild(anim);
+  pulseLayer.appendChild(circle);
+  anim.beginElement();
+  setTimeout(() => circle.remove(), 950);
+}
+
+// ---------------------------------------------------------------------
+// Progress bar
+// ---------------------------------------------------------------------
+function updateProgress(nodes, currentNode, status) {
+  const succeeded = CORE_PATH.filter(id => nodes[id] && nodes[id].status === "succeeded").length;
+  const pct = Math.round((succeeded / CORE_PATH.length) * 100);
+  document.getElementById("progressBarInner").style.width = pct + "%";
+  document.getElementById("progressPct").textContent = pct + "%";
+  let label;
+  if (status === "completed") label = "Done — all phases succeeded";
+  else if (status === "failed_needs_human") label = `Stopped for human review at "${currentNode}"`;
+  else if (status === "failed") label = `Failed at "${currentNode}"`;
+  else label = `Step ${succeeded + 1} of ${CORE_PATH.length}: ${currentNode || "—"}`;
+  document.getElementById("progressLabel").textContent = label;
+}
+
+// ---------------------------------------------------------------------
+// Budgets panel
+// ---------------------------------------------------------------------
+function budgetKeysFromGraph(graphNodes) {
+  const maxByKey = {};
+  for (const spec of Object.values(graphNodes || {})) {
+    const routes = [];
+    if (spec.on_fail) routes.push(spec.on_fail);
+    if (spec.routes) routes.push(...Object.values(spec.routes));
+    for (const r of routes) {
+      if (r.budget_key) maxByKey[r.budget_key] = r.max_uses;
+    }
+  }
+  return maxByKey;
+}
+
+function updateBudgets(budgets, grants, graphNodes) {
+  const maxByKey = budgetKeysFromGraph(graphNodes);
+  const table = document.getElementById("budgetsTable");
+  const keys = Object.keys(maxByKey);
+  if (!keys.length) {
+    table.innerHTML = `<tr><td colspan="2" class="empty">—</td></tr>`;
+    return;
+  }
+  table.innerHTML = keys.map(k => {
+    const used = (budgets && budgets[k]) || 0;
+    const declaredMax = maxByKey[k];
+    const granted = (grants && grants[k]) || 0;
+    const effectiveMax = declaredMax + granted;
+    const warn = used >= effectiveMax ? ` style="color:var(--failed)"` : "";
+    const grantNote = granted ? ` <span style="color:var(--accent)">(+${granted} granted)</span>` : "";
+    return `<tr><td>${k}</td><td${warn}>${used} / ${effectiveMax}${grantNote}</td></tr>`;
+  }).join("");
+}
+
+// ---------------------------------------------------------------------
+// Status badge
+// ---------------------------------------------------------------------
+function updateStatusBadge(status) {
+  const el = document.getElementById("statusBadge");
+  el.textContent = status || "—";
+  el.className = "badge-" + (status || "unknown");
+}
+
+// ---------------------------------------------------------------------
+// Resume / grant panel — manual operator control, no source edits, no
+// engineer needed: this is the whole point of Session.grant_budget. Must
+// match sessions.py's RESUMABLE_STATUSES.
+// ---------------------------------------------------------------------
+const RESUMABLE_STATUSES = ["failed", "failed_needs_human", "running"];
+
+function updateResumePanel(status, graphNodes) {
+  const resumable = RESUMABLE_STATUSES.includes(status);
+  document.getElementById("resumeUnavailable").hidden = resumable;
+  document.getElementById("resumeControls").hidden = !resumable;
+  if (!resumable) return;
+
+  const keys = Object.keys(budgetKeysFromGraph(graphNodes));
+  const sel = document.getElementById("grantKey");
+  const prevValue = sel.value;
+  sel.innerHTML = `<option value="">— none —</option>` + keys.map(k => `<option value="${k}">${k}</option>`).join("");
+  if (keys.includes(prevValue)) sel.value = prevValue;
+}
+
+async function doResume() {
+  const id = state.sessionId;
+  if (!id) return;
+  const btn = document.getElementById("resumeBtn");
+  const statusEl = document.getElementById("resumeStatus");
+  const key = document.getElementById("grantKey").value;
+  const amount = parseInt(document.getElementById("grantAmount").value, 10);
+  const reason = document.getElementById("grantReason").value.trim();
+  const grantedBy = document.getElementById("grantedBy").value.trim();
+
+  const body = {};
+  if (key) {
+    if (!(amount > 0)) {
+      statusEl.style.color = "var(--failed)";
+      statusEl.textContent = "Extra uses must be a positive number.";
+      return;
+    }
+    if (!reason) {
+      statusEl.style.color = "var(--failed)";
+      statusEl.textContent = "A reason is required to grant a budget.";
+      return;
+    }
+    body.grants = {[key]: amount};
+    body.grant_reason = reason;
+    if (grantedBy) body.granted_by = grantedBy;
+  }
+
+  btn.disabled = true;
+  statusEl.style.color = "var(--text-dim)";
+  statusEl.textContent = "Resuming… this can take a while (real model calls, no fixed timeout).";
+  try {
+    const r = await fetch(`${API}/sessions/${id}/resume`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const detail = await r.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${r.status}`);
+    }
+    statusEl.style.color = "var(--succeeded)";
+    statusEl.textContent = "Done — refreshing…";
+    await selectSession(id);
+  } catch (err) {
+    statusEl.style.color = "var(--failed)";
+    statusEl.textContent = "Resume failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Event log
+// ---------------------------------------------------------------------
+function appendLogLines(events, animateNew) {
+  const panel = document.getElementById("logPanel");
+  if (panel.querySelector(".empty")) panel.innerHTML = "";
+  for (const e of events) {
+    const line = document.createElement("div");
+    line.className = "log-line" + (animateNew ? " new" : "");
+    const t = new Date(e.timestamp * 1000).toLocaleTimeString();
+    const nodePart = e.node_id ? ` <b>${e.node_id}</b>` : "";
+    let extra = "";
+    if (e.type === "ROUTE_TAKEN" && e.data) {
+      extra = ` → ${e.data.target}${e.data.budget_key ? ` (${e.data.budget_key}: ${e.data.budget_used}/${e.data.budget_max})` : ""}`;
+    } else if (e.type === "NODE_FAILED" && e.data && e.data.error) {
+      extra = ` — ${e.data.error.slice(0, 140)}`;
+    } else if (e.type === "RUN_FINISHED" && e.data) {
+      extra = ` — ${e.data.status}`;
+    }
+    line.innerHTML = `<span class="t">${t}</span><span class="ty ${e.type}">${e.type}</span><span>${nodePart}${extra}</span>`;
+    panel.appendChild(line);
+  }
+  panel.scrollTop = panel.scrollHeight;
+}
+
+// ---------------------------------------------------------------------
+// Report panel
+// ---------------------------------------------------------------------
+async function loadReport(sessionId) {
+  try {
+    const report = await getJSON(`${API}/sessions/${sessionId}/report`);
+    const body = document.getElementById("reportBody");
+    const contract = report.contract || {};
+    const review = report.review || {};
+    const issuesHtml = (review.issues || []).map(i => `<li class="issue">${escapeHtml(i)}</li>`).join("");
+    body.innerHTML = `
+      <table class="kv">
+        <tr><td>Title</td><td>${escapeHtml(contract.title || "—")}</td></tr>
+        <tr><td>Description</td><td>${escapeHtml(contract.description || "—")}</td></tr>
+        <tr><td>Test result</td><td>${report.test_result ? (report.test_result.passed ? "passed" : "failed") : "—"}</td></tr>
+        <tr><td>Review</td><td>${review.approved === true ? "approved" : review.approved === false ? "rejected" : "—"}</td></tr>
+        <tr><td>Calibrated pattern</td><td>${escapeHtml(report.calibrated_pattern || "—")}</td></tr>
+      </table>
+      <div class="section-gap files">
+        <div><b>Implementation files</b> (${(report.files_written.implementation || []).length})</div>
+        <div>${(report.files_written.implementation || []).map(escapeHtml).join("<br>") || "—"}</div>
+        <div class="section-gap"><b>Test files</b> (${(report.files_written.tests || []).length})</div>
+        <div>${(report.files_written.tests || []).map(escapeHtml).join("<br>") || "—"}</div>
+      </div>
+      ${issuesHtml ? `<div class="section-gap"><b>Review issues (${review.issues.length})</b><ul>${issuesHtml}</ul></div>` : ""}
+    `;
+  } catch (e) {
+    document.getElementById("reportBody").innerHTML = `<div class="empty">Report not available yet.</div>`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---------------------------------------------------------------------
+// Main poll cycle
+// ---------------------------------------------------------------------
+async function selectSession(id) {
+  stopPolling();
+  state.sessionId = id;
+  state.lastEventCount = 0;
+  state.lastStartedNode = null;
+  document.getElementById("logPanel").innerHTML = `<div class="empty">Loading…</div>`;
+  document.getElementById("reportBody").innerHTML = `<div class="empty">Available once the run finishes.</div>`;
+  if (!id) return;
+
+  const trace = await getJSON(`${API}/sessions/${id}/trace`);
+  const events = trace.events || [];
+  // Use the LATEST snapshot, not the first — the topology can legitimately
+  // change between resumes (e.g. a route's budget got raised), and the
+  // dashboard should reflect what's actually governing the run right now,
+  // not what governed it originally. Every resume re-emits one.
+  const snapshots = events.filter(e => e.type === "GRAPH_SNAPSHOT");
+  const snapshot = snapshots[snapshots.length - 1];
+  const graphNodes = snapshot ? snapshot.data.nodes : {};
+  drawGraphShell(graphNodes);
+
+  // Replay history without animating (just render the log); the walker's
+  // last NODE_STARTED before this point is where live edge-pulses resume.
+  document.getElementById("logPanel").innerHTML = "";
+  appendLogLines(events, false);
+  state.lastEventCount = events.length;
+  for (const e of events) {
+    if (e.type === "NODE_STARTED") state.lastStartedNode = e.node_id;
+  }
+
+  await refreshOnce();
+  if (document.getElementById("autoRefreshToggle").checked) startPolling();
+}
+
+async function refreshOnce() {
+  const id = state.sessionId;
+  if (!id) return;
+  const data = await getJSON(`${API}/sessions/${id}`);
+  updateStatusBadge(data.status);
+
+  for (const [nodeId, n] of Object.entries(data.nodes || {})) {
+    setNodeStatus(nodeId, n.status, n.attempts, nodeId === data.current_node);
+  }
+  updateProgress(data.nodes || {}, data.current_node, data.status);
+  updateBudgets(data.budgets || {}, data.budget_grants || {}, state.graphNodes);
+  updateResumePanel(data.status, state.graphNodes);
+
+  // pull new trace events since last check, animate transitions
+  const trace = await getJSON(`${API}/sessions/${id}/trace`);
+  const events = trace.events || [];
+  if (events.length > state.lastEventCount) {
+    const fresh = events.slice(state.lastEventCount);
+    appendLogLines(fresh, true);
+    for (const e of fresh) {
+      if (e.type === "NODE_STARTED") {
+        if (state.lastStartedNode && state.lastStartedNode !== e.node_id) {
+          animateEdge(state.lastStartedNode, e.node_id);
+        }
+        state.lastStartedNode = e.node_id;
+      }
+    }
+    state.lastEventCount = events.length;
+  }
+
+  const terminal = ["completed", "failed", "failed_needs_human"].includes(data.status);
+  if (terminal) {
+    stopPolling();
+    await loadReport(id);
+  }
+  return data.status;
+}
+
+function startPolling() {
+  stopPolling();
+  state.pollTimer = setInterval(() => {
+    refreshOnce().catch(err => console.error(err));
+  }, 1500);
+}
+function stopPolling() {
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = null;
+}
+
+// ---------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------
+document.getElementById("sessionSelect").addEventListener("change", e => {
+  selectSession(e.target.value);
+});
+document.getElementById("refreshBtn").addEventListener("click", async () => {
+  const id = await loadSessions(true);
+  if (id && id !== state.sessionId) {
+    selectSession(id);
+  } else {
+    refreshOnce().catch(err => console.error(err));
+  }
+});
+document.getElementById("autoRefreshToggle").addEventListener("change", e => {
+  if (e.target.checked && state.sessionId) startPolling();
+  else stopPolling();
+});
+document.getElementById("resumeBtn").addEventListener("click", () => {
+  doResume().catch(err => console.error(err));
+});
+
+(async function init() {
+  const id = await loadSessions(false);
+  if (id) selectSession(id);
+})();
+</script>
+</body>
+</html>

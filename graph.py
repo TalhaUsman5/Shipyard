@@ -1,0 +1,258 @@
+"""
+The phase graph itself: the whole pipeline's topology in one place, as
+data (schemas.NodeSpec / ClassifierRoute) — not as Python control flow.
+Read this file to see the whole shape of the pipeline; read engine.py to
+see what each node actually does when it runs.
+
+    plan -> scope_gate --pass--> build -> verify -> test_gate --pass--> review -> review_gate --pass--> calibrate -> (done)
+                |                              |                              |
+              fail                           fail                           fail
+                v                              v                              v
+              plan                          arbiter                  review_arbiter
+     (reset: plan)          (bug/noise/spec_gap/ambiguity/test_gap) (implementation_gap/scope_creep/test_gap)
+     budget: scope_retry x2          bug      -> build (reset: build)                 budget: build_retry x4
+                                     noise    -> test_gate (reset: none — rerun as-is) budget: build_retry x4
+                                     spec_gap -> plan (reset: plan, build, verify)     budget: plan_retry x1
+                                     ambiguity-> plan (reset: plan, build, verify)     budget: ambiguity_retry x1
+                                     test_gap -> verify (reset: verify)                budget: test_retry x1 (shared)
+
+                  implementation_gap -> build (reset: build, review)  budget: review_retry x6
+                  scope_creep        -> plan (reset: plan, build, verify, review) budget: scope_retry x2 (shared)
+                  test_gap           -> verify (reset: verify, review) budget: test_retry x1 (shared)
+
+A run only ever reaches a true dead end (failed_needs_human with no
+further route) by exhausting one of these budgets, or via an
+unrecognized classification label — every declared classification has
+somewhere bounded to go first.
+
+"scope_gate" runs right after "plan", before any build/verify/review work
+happens — the SAME judgment review_arbiter's "scope_creep" makes, just
+proactive. It exists because every "scope_creep" correction we've done so
+far paid for a full build->verify->review cycle FIRST, only to discover
+after all that work that the contract itself had already overshot the
+original ask. Catching it here, before Build or Verify ever run, is
+strictly cheaper. It shares the "scope_retry" budget with review_arbiter's
+"scope_creep" (same resource, two triggers — a contract that slips past
+this gate can still be caught later if a Reviewer notices what the gate
+didn't), so both routes must declare the same max_uses.
+
+A Reviewer rejection doesn't route straight to "build" — it goes through
+"review_arbiter" first, the same judgment-then-route pattern test_gate
+uses via "arbiter". Most rejections are genuine implementation gaps and
+route to build exactly as before (build's own forward edge already runs
+verify(cached)->test_gate(always fresh)->review(reset, so it re-judges the
+new code)->review_gate, so one retry re-earns the test gate too, not just
+a fresh Review opinion on unchanged code). But a Reviewer can be faithfully
+enforcing a contract that itself demands more than the ORIGINAL feature
+request ever asked for — the Planner over-elaborated it — and Build can't
+fix a contract that overshot the ask. review_arbiter sees the original
+feature request specifically to catch that case and route back to "plan"
+to narrow the contract instead, bounded by its own small "scope_retry"
+budget so a genuine scope correction happens once, not indefinitely.
+
+"ambiguity" routes exactly like "spec_gap" (reset plan/build/verify, feed
+the Arbiter's feedback_for_planner into the Planner's next attempt) under
+its own budget — the two failure reasons are mechanically identical
+(the contract needs a clarifying pass) but kept distinguishable in the
+trace. Resetting "verify" too means the Verifier also rewrites its tests
+against the clarified contract, so this is a joint re-derivation of both
+sides, not "narrow the contract until the existing test passes." The same
+is true of "scope_creep" relative to "implementation_gap".
+
+"test_gap" exists on BOTH classifiers, because the same problem can surface
+two different ways: arbiter's "test_gap" catches it when a broken test
+fixture makes test_gate fail outright (found live: a FakeGitHub mock
+substituting a default value that masked the exact scenario a test claimed
+to cover — the Arbiter's own explanation named the fixture defect
+precisely, but with no route for it the only available label was "bug",
+which sent it to Build and burned a real retry on something Build could
+never fix). review_arbiter's "test_gap" catches it when the Reviewer
+notices the submitted tests are inconsistent or incomplete even though
+they technically pass. Neither of the other routes on either classifier
+can fix a defect IN the tests: "bug"/"implementation_gap" reset "build"
+(and "review", for review_arbiter) but never "verify", and Build never
+sees test code anyway (BUILDER_SYSTEM's own rule) — so the same test
+defect would recur every single cycle no matter how many bug or
+implementation_gap retries ran, since nothing ever gave the Verifier a
+chance to rewrite the file. Both routes share the "test_retry" budget
+(same resource, two triggers) and MUST declare the same max_uses for that
+to mean anything consistent. review_arbiter's version also resets "review"
+(it already ran and rejected once, so without resetting it review_gate
+would just re-check that same stale rejection instead of judging the
+rewritten tests) — arbiter's version doesn't, because at that point in the
+graph "review" hasn't run yet.
+
+Gate and classifier nodes always execute when the walker reaches them —
+never skipped, never cached — because they must reflect current truth.
+"test_gate"/"review_gate" happen to be cheap and deterministic (a real
+`npm test` run; `review.approved`); "scope_gate" is the one gate whose
+handler makes an LLM judgment call instead, but the rule is the same:
+gates are never trusted from a prior run, only ever evaluated fresh. Work
+nodes (plan/build/verify/review/calibrate) are the opposite — skipped and
+their prior output reused whenever they're already marked "succeeded" and
+weren't named in a route's `reset` list — this is what makes retries *and*
+resuming an interrupted run the same mechanism: both are just "walk the
+graph again and let already-succeeded work nodes skip themselves."
+"""
+from schemas import (
+    ArbiterOutput,
+    BuildOutput,
+    CalibratorOutput,
+    ClassifierRoute,
+    Contract,
+    NodeSpec,
+    ReviewArbiterOutput,
+    ReviewOutput,
+    TestOutput,
+)
+
+ENTRY_NODE = "plan"
+
+# Global safety net: caps total node executions in a single walk, independent
+# of any per-route budget below. Protects against a misconfigured graph
+# (e.g. a route cycle with no budget_key) looping forever.
+#
+# Must comfortably exceed the worst case every per-route budget allows,
+# summed — otherwise this cap fires first and silently eats a legitimate
+# retry before its own budget check ever gets to run. Worst case here:
+# base path (10 nodes: plan/scope_gate/build/verify/test_gate/arbiter/
+# review/review_gate/review_arbiter/calibrate)
+# + build_retry's 4 uses x <=6 nodes = 24
+# + plan_retry's 1 use x <=5 nodes = 5 (scope_gate sits in this cycle now)
+# + ambiguity_retry's 1 use x <=5 nodes = 5
+# + review_retry's 6 uses x <=6 nodes (build/verify/test_gate/review/
+#   review_gate/review_arbiter) = 36
+# + scope_retry's 2 uses x <=8 nodes = 16 (SHARED between scope_gate's
+#   on_fail — a short plan/scope_gate cycle — and review_arbiter's
+#   scope_creep — a longer plan..review_gate cycle; take the larger, one
+#   shared counter, not "2 uses x 2 routes")
+# + test_retry's 1 use x <=6 nodes = 6 (shared the same way, unaffected by
+#   scope_gate's insertion since neither test_gap route targets "plan")
+# = 10 + 24 + 5 + 5 + 36 + 16 + 6 = 102. Rounded up with real headroom (not
+# just to the exact worst case) for future routes.
+MAX_TOTAL_ITERATIONS = 140
+
+PHASE_GRAPH: dict[str, NodeSpec] = {
+    "plan": NodeSpec(id="plan", kind="work", next="scope_gate"),
+    "scope_gate": NodeSpec(
+        id="scope_gate",
+        kind="gate",
+        next="build",
+        on_fail=ClassifierRoute(
+            target="plan", reset=["plan"], budget_key="scope_retry", max_uses=2
+        ),
+    ),
+    "build": NodeSpec(id="build", kind="work", next="verify"),
+    "verify": NodeSpec(id="verify", kind="work", next="test_gate"),
+    "test_gate": NodeSpec(id="test_gate", kind="gate", next="review", on_fail=ClassifierRoute(target="arbiter")),
+    "arbiter": NodeSpec(
+        id="arbiter",
+        kind="classifier",
+        routes={
+            "bug": ClassifierRoute(
+                target="build", reset=["build"], budget_key="build_retry", max_uses=4
+            ),
+            "noise": ClassifierRoute(
+                target="test_gate", reset=[], budget_key="build_retry", max_uses=4
+            ),
+            "spec_gap": ClassifierRoute(
+                target="plan",
+                reset=["plan", "build", "verify"],
+                budget_key="plan_retry",
+                max_uses=1,
+            ),
+            # Same shape as spec_gap — reset plan/build/verify so the
+            # Planner clarifies the contract AND the Verifier rewrites its
+            # tests against that clarification (this isn't "narrow the
+            # contract until the existing rigid test passes"; both sides
+            # re-derive from the disambiguated spec). A separate budget key
+            # from plan_retry keeps the two failure reasons distinguishable
+            # in the trace even though the route mechanics are identical.
+            "ambiguity": ClassifierRoute(
+                target="plan",
+                reset=["plan", "build", "verify"],
+                budget_key="ambiguity_retry",
+                max_uses=1,
+            ),
+            # The test FILE is defective, not the implementation — route to
+            # Verifier, not Builder (which never sees test code and could
+            # never fix this no matter how many "bug" retries it got).
+            # "review" isn't reset: at this point in the graph it hasn't
+            # run yet, same as spec_gap/ambiguity above. Shares the
+            # "test_retry" budget with review_arbiter's identically-named
+            # route below — same underlying resource ("how many times will
+            # we let Verifier redo its tests"), reached from two different
+            # triggers (a test_gate failure here; a Reviewer rejection
+            # there). Both routes MUST declare the same max_uses, since
+            # whichever one fires reads its own max_uses against a shared
+            # "used" counter — a mismatch would make the effective ceiling
+            # depend on which one happened to trigger first.
+            "test_gap": ClassifierRoute(
+                target="verify",
+                reset=["verify"],
+                budget_key="test_retry",
+                max_uses=1,
+            ),
+        },
+    ),
+    "review": NodeSpec(id="review", kind="work", next="review_gate"),
+    "review_gate": NodeSpec(
+        id="review_gate",
+        kind="gate",
+        next="calibrate",
+        on_fail=ClassifierRoute(target="review_arbiter"),
+    ),
+    "review_arbiter": NodeSpec(
+        id="review_arbiter",
+        kind="classifier",
+        routes={
+            "implementation_gap": ClassifierRoute(
+                target="build", reset=["build", "review"], budget_key="review_retry", max_uses=6
+            ),
+            # The contract itself overshot the original ask — narrow it
+            # back rather than have Build keep chasing an unbounded
+            # target. Same shape as arbiter's spec_gap/ambiguity: reset
+            # plan/build/verify so the Verifier also re-derives its tests
+            # against the narrowed contract, under its own small budget so
+            # a genuine correction happens once, not indefinitely. Unlike
+            # spec_gap/ambiguity (triggered before "review" ever runs),
+            # "review" must ALSO be reset here — it already ran and
+            # rejected once, so without resetting it review_gate would
+            # just re-check that same stale rejection against the
+            # narrowed contract instead of getting a fresh verdict.
+            "scope_creep": ClassifierRoute(
+                target="plan",
+                reset=["plan", "build", "verify", "review"],
+                budget_key="scope_retry",
+                max_uses=2,
+            ),
+            # The rejection is about the SUBMITTED TESTS themselves, not
+            # the implementation — route straight to "verify", not "build".
+            # No amount of Build retries can fix a defect in a file Build
+            # never sees; only resetting "verify" gives the Verifier a
+            # chance to rewrite it. "review" is also reset (same reason as
+            # scope_creep above: it already ran and rejected once) so the
+            # rewritten tests get judged fresh, not against a stale verdict.
+            "test_gap": ClassifierRoute(
+                target="verify",
+                reset=["verify", "review"],
+                budget_key="test_retry",
+                max_uses=1,
+            ),
+        },
+    ),
+    "calibrate": NodeSpec(id="calibrate", kind="work", next=None, fatal_on_error=False),
+}
+
+# Which pydantic model a node's persisted `output` deserializes back into on
+# resume. Gate nodes aren't listed — their output is a plain dict (test
+# results / review-gate summary), not a role schema.
+NODE_OUTPUT_MODELS = {
+    "plan": Contract,
+    "build": BuildOutput,
+    "verify": TestOutput,
+    "arbiter": ArbiterOutput,
+    "review": ReviewOutput,
+    "review_arbiter": ReviewArbiterOutput,
+    "calibrate": CalibratorOutput,
+}

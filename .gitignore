@@ -1,0 +1,18 @@
+# Secrets — never commit real credentials. See .env.example for the template.
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated at runtime by the harness itself (see README's Isolated
+# workspace / Durable state sections) — a fresh clone starts with none of
+# this and the harness scaffolds it back on the first /run.
+sessions/*.json
+sessions/*.events.jsonl
+workspace/*
+!workspace/.gitkeep
+
+# Claude Code's local, machine-specific permission overrides.
+.claude/settings.local.json
