@@ -387,40 +387,11 @@ def test_resume_emits_a_second_graph_snapshot(fake_agents, calls, knobs, make_re
     assert any(e["type"] == "RUN_RESUMED" for e in events)
 
 
-def test_scope_gate_in_scope_proceeds_straight_to_build(fake_agents, calls, knobs, make_repo):
-    make_repo("proj_scope_ok")
-
-    session = engine.run_pipeline("add greet helper", "proj_scope_ok")
-
-    assert session.data["status"] == "completed"
-    assert calls.scope_check == 1
-    assert calls.plan == 1, "an in-scope contract must not trigger a replan"
-    assert session.data["budgets"].get("scope_retry", 0) == 0
-
-
-def test_scope_gate_failure_triggers_replan_and_consumes_scope_retry(fake_agents, calls, knobs, make_repo):
-    knobs.scope_check_in_scope = False
-    make_repo("proj_scope_bad")
-
-    session = engine.run_pipeline("add greet helper", "proj_scope_bad")
-
-    assert session.data["status"] == "failed_needs_human"
-    assert calls.scope_check == 3, "1 initial + 2 retries (scope_retry budget = 2), always failing here"
-    assert calls.plan == 3, "scope_gate's on_fail resets plan"
-    assert calls.build == 0, "scope_gate must catch an over-scoped contract before build ever runs"
-    assert session.data["budgets"]["scope_retry"] == 2
-
-
-def test_scope_gate_and_review_arbiters_scope_creep_share_one_budget_counter(
-    fake_agents, calls, knobs, make_repo
-):
-    # scope_gate always passes here, so the run's own scope_retry uses are
-    # driven entirely by review_arbiter's "scope_creep" route — this just
-    # confirms the two routes read/write the SAME budget key ("scope_retry"
-    # in graph.py for both), and that scope_gate re-runs on every "plan"
-    # attempt the shared counter causes, including ones triggered by
-    # scope_creep rather than by scope_gate itself.
-    knobs.scope_check_in_scope = True
+def test_scope_creep_alone_still_consumes_scope_retry(fake_agents, calls, knobs, make_repo):
+    """scope_retry is no longer shared with a proactive scope_gate (removed
+    in favor of a human "plan_review" gate — see graph.py's docstring); this
+    just confirms review_arbiter's "scope_creep" route still owns and
+    exhausts its own budget on its own."""
     knobs.review_arbiter_classification = "scope_creep"
     knobs.review_approved_from_call = 99
     make_repo("proj_shared_budget")
@@ -429,4 +400,3 @@ def test_scope_gate_and_review_arbiters_scope_creep_share_one_budget_counter(
 
     assert session.data["status"] == "failed_needs_human"
     assert session.data["budgets"]["scope_retry"] == 2
-    assert calls.scope_check == 3, "scope_gate re-runs on every plan retry, including scope_creep's"

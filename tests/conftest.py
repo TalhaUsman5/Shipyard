@@ -6,6 +6,16 @@ execution.run_tests are monkeypatched (fake_agents) so tests never call a
 real LLM and never require npm/Node to be installed. WORKSPACE_DIR and
 SESSIONS_DIR are redirected into pytest's tmp_path (isolated_dirs, autouse)
 so no test ever touches the real workspace/ or sessions/ directories.
+
+"plan_review" (a human_gate — see graph.py) means every run now pauses
+after "plan" for a live approve/reject decision. Most tests here care
+about what happens AFTER that gate, not the gate itself, so `fake_agents`
+additionally wraps engine.run_pipeline/resume_pipeline to auto-approve any
+plan_review pause transparently — no test body below had to change to
+account for the new gate. Tests that exercise plan_review's own mechanics
+(tests/test_plan_review.py) use `fake_agents_raw` instead, which stops at
+the plan/execution fakes and leaves run_pipeline/resume_pipeline/
+apply_review untouched.
 """
 import os
 import sys
@@ -17,6 +27,7 @@ import pytest
 import agents
 import engine
 import execution
+import memory
 import sessions
 from schemas import (
     ArbiterOutput,
@@ -25,7 +36,6 @@ from schemas import (
     Contract,
     ReviewArbiterOutput,
     ReviewOutput,
-    ScopeCheckOutput,
     TestOutput,
 )
 
@@ -48,6 +58,13 @@ def isolated_dirs(tmp_path, monkeypatch):
     sdir.mkdir()
     monkeypatch.setattr(engine, "WORKSPACE_DIR", str(ws))
     monkeypatch.setattr(sessions, "SESSIONS_DIR", str(sdir))
+    # Regression guard: a full pipeline run through "calibrate" calls the
+    # REAL memory.append_pattern unless this is redirected too — found live
+    # when a routine sanity check revealed the real AGENTS.md had picked up
+    # 22 recurrences of a test-only pattern from every prior test run that
+    # ever reached this node, completely unnoticed while append_pattern's
+    # old dedup-to-one-line behavior masked how many times it had happened.
+    monkeypatch.setattr(memory, "MEMORY_PATH", str(tmp_path / "AGENTS.md"))
     return {"workspace": str(ws), "sessions": str(sdir)}
 
 
@@ -67,9 +84,7 @@ class Calls(dict):
 
 @pytest.fixture
 def calls():
-    return Calls(
-        plan=0, scope_check=0, build=0, verify=0, test_run=0, arbiter=0, review=0, review_arbiter=0, calibrate=0
-    )
+    return Calls(plan=0, build=0, verify=0, test_run=0, arbiter=0, review=0, review_arbiter=0, calibrate=0)
 
 
 class Knobs:
@@ -80,7 +95,6 @@ class Knobs:
         self.arbiter_classification = "bug"
         self.review_approved_from_call = 1
         self.review_arbiter_classification = "implementation_gap"
-        self.scope_check_in_scope = True
 
 
 @pytest.fixture
@@ -89,33 +103,37 @@ def knobs():
 
 
 @pytest.fixture
-def fake_agents(monkeypatch, calls, knobs):
+def fake_agents_raw(monkeypatch, calls, knobs):
     """Monkeypatches every agents.run_* function and execution.run_tests
     with deterministic fakes. Tests tune behavior via `knobs` and read call
-    counts via `calls`."""
+    counts via `calls`. Does NOT touch engine.run_pipeline/resume_pipeline —
+    a run through this fixture alone will pause at "plan_review" (a
+    human_gate) and go no further. Use `fake_agents` for the common case of
+    not caring about that pause."""
 
-    def fake_planner(feature_request, memory, snapshot, pkg, refinement_feedback=None):
+    received_planner_refinement_feedback = []
+
+    def fake_planner(feature_request, memory, snapshot, pkg, refinement_feedback=None, snapshot_truncated=False):
         calls["plan"] += 1
+        received_planner_refinement_feedback.append(refinement_feedback)
         return Contract(**CONTRACT_FIELDS), {"input": 1, "output": 1}
-
-    def fake_scope_check(feature_request, contract, memory):
-        calls["scope_check"] += 1
-        in_scope = knobs.scope_check_in_scope
-        return (
-            ScopeCheckOutput(
-                in_scope=in_scope,
-                issues=[] if in_scope else ["acceptance criteria invent a requirement not in the request"],
-                summary="in scope" if in_scope else "contract overshoots the original request",
-            ),
-            {"input": 1, "output": 1},
-        )
 
     received_current_files = []
     received_build_arbiter_feedback = []
     received_build_previous_review = []
     received_previous_reviews = []
 
-    def fake_builder(contract, snapshot, pkg, memory, current_files=None, arbiter_feedback=None, previous_review=None):
+    def fake_builder(
+        contract,
+        snapshot,
+        pkg,
+        memory,
+        current_files=None,
+        arbiter_feedback=None,
+        previous_review=None,
+        snapshot_truncated=False,
+        omitted_current_files=0,
+    ):
         calls["build"] += 1
         received_current_files.append(current_files)
         received_build_arbiter_feedback.append(arbiter_feedback)
@@ -127,7 +145,16 @@ def fake_agents(monkeypatch, calls, knobs):
     received_verifier_feedback = []
     received_verifier_current_files = []
 
-    def fake_verifier(contract, snapshot, pkg, memory, current_files=None, feedback=None):
+    def fake_verifier(
+        contract,
+        snapshot,
+        pkg,
+        memory,
+        current_files=None,
+        feedback=None,
+        snapshot_truncated=False,
+        omitted_current_files=0,
+    ):
         calls["verify"] += 1
         received_verifier_feedback.append(feedback)
         received_verifier_current_files.append(current_files)
@@ -173,9 +200,9 @@ def fake_agents(monkeypatch, calls, knobs):
 
     def fake_calibrator(session_summary, memory):
         calls["calibrate"] += 1
-        return CalibratorOutput(pattern="check exact output strings"), {"input": 1, "output": 1}
+        return CalibratorOutput(patterns=["check exact output strings"]), {"input": 1, "output": 1}
 
-    def fake_test_run(project_path, timeout=60):
+    def fake_test_run(project_path, timeout=60, cancel_event=None):
         calls["test_run"] += 1
         path = os.path.join(project_path, "src", "greeting.js")
         content = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
@@ -189,7 +216,6 @@ def fake_agents(monkeypatch, calls, knobs):
         }
 
     monkeypatch.setattr(agents, "run_planner", fake_planner)
-    monkeypatch.setattr(agents, "run_scope_check", fake_scope_check)
     monkeypatch.setattr(agents, "run_builder", fake_builder)
     monkeypatch.setattr(agents, "run_verifier", fake_verifier)
     monkeypatch.setattr(agents, "run_arbiter", fake_arbiter)
@@ -205,7 +231,38 @@ def fake_agents(monkeypatch, calls, knobs):
         "previous_reviews": received_previous_reviews,
         "verifier_feedback": received_verifier_feedback,
         "verifier_current_files": received_verifier_current_files,
+        "planner_refinement_feedback": received_planner_refinement_feedback,
     }
+
+
+def _auto_approve(session):
+    """Keeps applying an approval to whatever plan_review pause a walk
+    stops at until it stops for some other reason (completed/failed/
+    failed_needs_human/cancelled) — a rejection-then-approval sequence
+    would need more than one pause in principle, though nothing in this
+    fake harness ever rejects on its own."""
+    while session is not None and session.data["status"] == "awaiting_review":
+        session = engine.apply_review(session.id, approved=True, reviewed_by="test-auto-approve")
+    return session
+
+
+@pytest.fixture
+def fake_agents(fake_agents_raw, monkeypatch):
+    """fake_agents_raw plus transparent auto-approval of any plan_review
+    pause, so the ~30 tests written before plan_review existed don't each
+    need to know it's there. See this file's module docstring."""
+    real_run_pipeline = engine.run_pipeline
+    real_resume_pipeline = engine.resume_pipeline
+
+    def run_pipeline(*args, **kwargs):
+        return _auto_approve(real_run_pipeline(*args, **kwargs))
+
+    def resume_pipeline(*args, **kwargs):
+        return _auto_approve(real_resume_pipeline(*args, **kwargs))
+
+    monkeypatch.setattr(engine, "run_pipeline", run_pipeline)
+    monkeypatch.setattr(engine, "resume_pipeline", resume_pipeline)
+    return fake_agents_raw
 
 
 @pytest.fixture

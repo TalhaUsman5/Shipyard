@@ -5,6 +5,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.claude/
 
 # Generated at runtime by the harness itself (see README's Isolated
 # workspace / Durable state sections) — a fresh clone starts with none of

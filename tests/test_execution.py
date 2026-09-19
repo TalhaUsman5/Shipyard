@@ -7,9 +7,11 @@ output (captured once, embedded below), not a hand-guessed format. Node's
 diagnostic YAML block closes with "..." (not a second "---"), which a
 first draft of this parser got wrong; these tests pin that down.
 """
+import json
 import os
 
-from execution import _parse_tap, apply_files_replacing_directory
+import execution
+from execution import _parse_tap, _uses_node_test_runner, apply_files_replacing_directory
 from schemas import FileEdit
 
 REAL_TAP_OUTPUT = """TAP version 13
@@ -141,3 +143,51 @@ def test_apply_files_replacing_directory_leaves_files_outside_the_directory_alon
     apply_files_replacing_directory(project_root, "test", [FileEdit(path="test/a.test.js", content="// a")])
 
     assert os.path.isfile(os.path.join(project_root, "src", "app.js"))
+
+
+def _write_package_json(project_root, test_script):
+    with open(os.path.join(project_root, "package.json"), "w", encoding="utf-8") as f:
+        json.dump({"scripts": {"test": test_script}}, f)
+
+
+def test_uses_node_test_runner_true_for_a_plain_node_test_script(tmp_path):
+    _write_package_json(str(tmp_path), "node --test")
+    assert _uses_node_test_runner(str(tmp_path)) is True
+
+
+def test_uses_node_test_runner_false_for_a_different_test_runner(tmp_path):
+    _write_package_json(str(tmp_path), "jest")
+    assert _uses_node_test_runner(str(tmp_path)) is False
+
+
+def test_uses_node_test_runner_defaults_true_when_package_json_is_missing(tmp_path):
+    assert _uses_node_test_runner(str(tmp_path)) is True
+
+
+def test_uses_node_test_runner_defaults_true_when_package_json_is_malformed(tmp_path):
+    with open(os.path.join(tmp_path, "package.json"), "w", encoding="utf-8") as f:
+        f.write("{not valid json")
+    assert _uses_node_test_runner(str(tmp_path)) is True
+
+
+def test_run_tests_skips_the_structured_rerun_for_a_non_node_test_project(tmp_path, monkeypatch):
+    """The real point of _uses_node_test_runner: run_tests must not pay
+    for the second full subprocess call when the project clearly isn't
+    node --test — confirmed by monkeypatching _try_structured_failure_detail
+    to explode if it's ever called."""
+    project_root = str(tmp_path)
+    _write_package_json(project_root, "jest")
+
+    def _run_npm_stub(args, root, timeout, cancel_event=None):
+        return 1, "", "some failure", False  # a failing primary run
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("_try_structured_failure_detail must not run for a non-node-test project")
+
+    monkeypatch.setattr(execution.shutil, "which", lambda name: "npm")
+    monkeypatch.setattr(execution, "_run_npm", _run_npm_stub)
+    monkeypatch.setattr(execution, "_try_structured_failure_detail", _boom)
+
+    result = execution.run_tests(project_root)
+    assert result["passed"] is False
+    assert result["structured"] == {}

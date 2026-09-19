@@ -4,20 +4,30 @@ data (schemas.NodeSpec / ClassifierRoute) — not as Python control flow.
 Read this file to see the whole shape of the pipeline; read engine.py to
 see what each node actually does when it runs.
 
-    plan -> scope_gate --pass--> build -> verify -> test_gate --pass--> review -> review_gate --pass--> calibrate -> (done)
-                |                              |                              |
-              fail                           fail                           fail
+                          ,-> build  -,
+    plan -> plan_review -+           +-> test_gate --pass--> review -> review_gate --pass--> calibrate -> (done)
+                |         `-> verify -'         |                              |
+             reject                          fail                           fail
                 v                              v                              v
               plan                          arbiter                  review_arbiter
-     (reset: plan)          (bug/noise/spec_gap/ambiguity/test_gap) (implementation_gap/scope_creep/test_gap)
-     budget: scope_retry x2          bug      -> build (reset: build)                 budget: build_retry x4
+   (reset: plan, human-paced) (bug/noise/spec_gap/ambiguity/test_gap) (implementation_gap/scope_creep/test_gap)
+                                     bug      -> build (reset: build)                 budget: build_retry x4
                                      noise    -> test_gate (reset: none — rerun as-is) budget: build_retry x4
                                      spec_gap -> plan (reset: plan, build, verify)     budget: plan_retry x1
                                      ambiguity-> plan (reset: plan, build, verify)     budget: ambiguity_retry x1
                                      test_gap -> verify (reset: verify)                budget: test_retry x1 (shared)
 
+"build" and "verify" run CONCURRENTLY, not sequentially — see
+PARALLEL_GROUPS below and engine.py's _run_parallel_group. Neither depends
+on the other's output (the Verifier is deliberately never given
+build_output — see agents.py), and test_gate is the actual synchronization
+point, so there's no reason to make one wait on the other. A route that
+resets only one of them (e.g. "bug" resets just "build", "test_gap" resets
+just "verify") still only reruns that one — the other stays cached, same
+as before this existed.
+
                   implementation_gap -> build (reset: build, review)  budget: review_retry x6
-                  scope_creep        -> plan (reset: plan, build, verify, review) budget: scope_retry x2 (shared)
+                  scope_creep        -> plan (reset: plan, build, verify, review) budget: scope_retry x2
                   test_gap           -> verify (reset: verify, review) budget: test_retry x1 (shared)
 
 A run only ever reaches a true dead end (failed_needs_human with no
@@ -25,16 +35,16 @@ further route) by exhausting one of these budgets, or via an
 unrecognized classification label — every declared classification has
 somewhere bounded to go first.
 
-"scope_gate" runs right after "plan", before any build/verify/review work
-happens — the SAME judgment review_arbiter's "scope_creep" makes, just
-proactive. It exists because every "scope_creep" correction we've done so
-far paid for a full build->verify->review cycle FIRST, only to discover
-after all that work that the contract itself had already overshot the
-original ask. Catching it here, before Build or Verify ever run, is
-strictly cheaper. It shares the "scope_retry" budget with review_arbiter's
-"scope_creep" (same resource, two triggers — a contract that slips past
-this gate can still be caught later if a Reviewer notices what the gate
-didn't), so both routes must declare the same max_uses.
+"plan_review" runs right after "plan", before any build/verify/review work
+happens: a human reads the Planner's contract and either approves it
+(-> build) or rejects it with feedback (-> plan, reset, re-derive). This
+replaced an earlier automated "scope_gate" (an LLM judging the same
+"did the contract overshoot the request" question scope_creep below
+catches reactively) — a human call on the contract is strictly more
+trustworthy than an LLM checking another LLM's output, and it's the one
+place in the pipeline a human is guaranteed to look before real
+implementation effort is spent. It has no retry budget: a human decides
+how many refinement passes are worth doing, not a fixed counter.
 
 A Reviewer rejection doesn't route straight to "build" — it goes through
 "review_arbiter" first, the same judgment-then-route pattern test_gate
@@ -48,7 +58,11 @@ request ever asked for — the Planner over-elaborated it — and Build can't
 fix a contract that overshot the ask. review_arbiter sees the original
 feature request specifically to catch that case and route back to "plan"
 to narrow the contract instead, bounded by its own small "scope_retry"
-budget so a genuine scope correction happens once, not indefinitely.
+budget so a genuine scope correction happens once, not indefinitely. This
+budget is no longer shared with anything else — an earlier "scope_gate"
+node used the same key proactively, right after "plan"; it's since been
+replaced by the "plan_review" human gate above, which has no budget at
+all (a human, not a counter, decides how many refinement passes to allow).
 
 "ambiguity" routes exactly like "spec_gap" (reset plan/build/verify, feed
 the Arbiter's feedback_for_planner into the Planner's next attempt) under
@@ -85,10 +99,16 @@ graph "review" hasn't run yet.
 Gate and classifier nodes always execute when the walker reaches them —
 never skipped, never cached — because they must reflect current truth.
 "test_gate"/"review_gate" happen to be cheap and deterministic (a real
-`npm test` run; `review.approved`); "scope_gate" is the one gate whose
-handler makes an LLM judgment call instead, but the rule is the same:
-gates are never trusted from a prior run, only ever evaluated fresh. Work
-nodes (plan/build/verify/review/calibrate) are the opposite — skipped and
+`npm test` run; `review.approved`), so re-running them fresh every time
+costs nothing. "plan_review" is the one exception: its verdict is a human
+decision, not a re-derivable fact, so an already-*approved* verdict IS
+trusted across a resume (see engine.py's _walk) — re-asking a human to
+approve the exact same contract again after an unrelated crash elsewhere
+in the pipeline would be a regression, not more truthful. A rejection
+never has this problem: it always routes straight back to "plan" in the
+same walk, so the contract has already changed by the time "plan_review"
+is reached again. Work nodes (plan/build/verify/review/calibrate) are the
+opposite — skipped and
 their prior output reused whenever they're already marked "succeeded" and
 weren't named in a route's `reset` list — this is what makes retries *and*
 resuming an interrupted run the same mechanism: both are just "walk the
@@ -115,34 +135,46 @@ ENTRY_NODE = "plan"
 # Must comfortably exceed the worst case every per-route budget allows,
 # summed — otherwise this cap fires first and silently eats a legitimate
 # retry before its own budget check ever gets to run. Worst case here:
-# base path (10 nodes: plan/scope_gate/build/verify/test_gate/arbiter/
-# review/review_gate/review_arbiter/calibrate)
+# base path (9 nodes: plan/plan_review/build/verify/test_gate/arbiter/
+# review/review_gate/review_arbiter/calibrate — plan_review itself is
+# unbounded since a human paces it, not counted against this LLM-retry cap)
 # + build_retry's 4 uses x <=6 nodes = 24
-# + plan_retry's 1 use x <=5 nodes = 5 (scope_gate sits in this cycle now)
+# + plan_retry's 1 use x <=5 nodes = 5
 # + ambiguity_retry's 1 use x <=5 nodes = 5
 # + review_retry's 6 uses x <=6 nodes (build/verify/test_gate/review/
 #   review_gate/review_arbiter) = 36
-# + scope_retry's 2 uses x <=8 nodes = 16 (SHARED between scope_gate's
-#   on_fail — a short plan/scope_gate cycle — and review_arbiter's
-#   scope_creep — a longer plan..review_gate cycle; take the larger, one
-#   shared counter, not "2 uses x 2 routes")
-# + test_retry's 1 use x <=6 nodes = 6 (shared the same way, unaffected by
-#   scope_gate's insertion since neither test_gap route targets "plan")
+# + scope_retry's 2 uses x <=8 nodes = 16 (review_arbiter's scope_creep only
+#   now — no longer shared with a proactive scope_gate, see graph docstring)
+# + test_retry's 1 use x <=6 nodes = 6 (shared between arbiter's and
+#   review_arbiter's identically-named test_gap routes)
 # = 10 + 24 + 5 + 5 + 36 + 16 + 6 = 102. Rounded up with real headroom (not
-# just to the exact worst case) for future routes.
+# just to the exact worst case) for future routes. "build"+"verify" running
+# concurrently as one PARALLEL_GROUPS step (see below) only ever REDUCES
+# how many outer-loop iterations a pass through the graph costs relative to
+# this count (each "<=N nodes" above still counts build and verify as two),
+# so this cap keeps even more headroom than the arithmetic above assumes —
+# never recalculated down, only ever conservative in the safer direction.
 MAX_TOTAL_ITERATIONS = 140
 
 PHASE_GRAPH: dict[str, NodeSpec] = {
-    "plan": NodeSpec(id="plan", kind="work", next="scope_gate"),
-    "scope_gate": NodeSpec(
-        id="scope_gate",
-        kind="gate",
+    "plan": NodeSpec(id="plan", kind="work", next="plan_review"),
+    "plan_review": NodeSpec(
+        id="plan_review",
+        kind="human_gate",
         next="build",
-        on_fail=ClassifierRoute(
-            target="plan", reset=["plan"], budget_key="scope_retry", max_uses=2
-        ),
+        # No budget: a human decides how many refinement passes are worth
+        # doing, not a fixed counter — see the "plan_review" section of
+        # this file's module docstring.
+        on_fail=ClassifierRoute(target="plan", reset=["plan"]),
     ),
-    "build": NodeSpec(id="build", kind="work", next="verify"),
+    # "build" and "verify" run concurrently — see PARALLEL_GROUPS below and
+    # the module docstring. Both declare the SAME `next`: neither one's
+    # "next" is actually followed on its own by the walker once it's part
+    # of a group (_run_parallel_group returns the group's shared next
+    # directly), but keeping them equal here is the invariant
+    # tests/test_graph.py checks, and is what makes "the group's next" a
+    # well-defined thing to read off of either member.
+    "build": NodeSpec(id="build", kind="work", next="test_gate"),
     "verify": NodeSpec(id="verify", kind="work", next="test_gate"),
     "test_gate": NodeSpec(id="test_gate", kind="gate", next="review", on_fail=ClassifierRoute(target="arbiter")),
     "arbiter": NodeSpec(
@@ -255,4 +287,18 @@ NODE_OUTPUT_MODELS = {
     "review": ReviewOutput,
     "review_arbiter": ReviewArbiterOutput,
     "calibrate": CalibratorOutput,
+}
+
+# Work-node ids that run CONCURRENTLY as a single step of the walk, keyed
+# by every id that's a member — so the walker recognizes the group whether
+# it arrives via the forward chain (plan_review -> "build") or via a solo
+# retry route that targets just one member directly (e.g. arbiter's
+# "test_gap" -> "verify"). See this file's module docstring for why build
+# and verify specifically are safe to run this way, and
+# engine._run_parallel_group for how a route that resets only one member
+# still reruns only that one. Every member of a group MUST declare the
+# same `next` — tests/test_graph.py enforces this.
+PARALLEL_GROUPS: dict[str, frozenset] = {
+    "build": frozenset({"build", "verify"}),
+    "verify": frozenset({"build", "verify"}),
 }

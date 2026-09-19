@@ -77,20 +77,8 @@ class ReviewArbiterOutput(BaseModel):
     feedback_for_verifier: Optional[str] = None
 
 
-class ScopeCheckOutput(BaseModel):
-    """The proactive scope gate's verdict, run right after "plan" and
-    before any build/verify/review work happens — catches a contract that
-    over-elaborated past the original feature request before spending a
-    full pipeline cycle on it, rather than only discovering it reactively
-    via review_arbiter's "scope_creep" after a Reviewer rejection."""
-
-    in_scope: bool
-    issues: List[str] = Field(default_factory=list)
-    summary: str = ""
-
-
 class CalibratorOutput(BaseModel):
-    pattern: Optional[str] = None
+    patterns: List[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +88,7 @@ class CalibratorOutput(BaseModel):
 # only place that still has to be code.
 # ---------------------------------------------------------------------------
 
-NodeKind = Literal["work", "gate", "classifier"]
+NodeKind = Literal["work", "gate", "classifier", "human_gate"]
 NodeStatus = Literal["pending", "running", "succeeded", "failed"]
 
 # Sentinel route target meaning "stop the run, a human needs to look at this."

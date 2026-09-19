@@ -4,7 +4,7 @@ that walks it. These catch a typo'd node id in `next`/`on_fail`/a route
 target before it would only ever surface as a confusing runtime KeyError
 mid-run.
 """
-from graph import ENTRY_NODE, NODE_OUTPUT_MODELS, PHASE_GRAPH
+from graph import ENTRY_NODE, NODE_OUTPUT_MODELS, PARALLEL_GROUPS, PHASE_GRAPH
 from schemas import FAIL_SENTINEL
 
 
@@ -81,4 +81,27 @@ def test_routes_sharing_a_budget_key_declare_the_same_max_uses():
             assert seen == route.max_uses, (
                 f"budget_key={route.budget_key!r} has inconsistent max_uses across routes: "
                 f"{seen!r} vs {route.max_uses!r}"
+            )
+
+
+def test_parallel_group_members_share_one_next():
+    """engine._run_parallel_group reads the group's shared `next` off of
+    just one member (sorted(group)[0]) — every member MUST actually agree,
+    or whichever one happens to be picked would silently decide where the
+    whole group routes to next for every member, not just itself."""
+    for group in PARALLEL_GROUPS.values():
+        nexts = {PHASE_GRAPH[nid].next for nid in group}
+        assert len(nexts) == 1, f"parallel group {sorted(group)!r} members disagree on `next`: {nexts!r}"
+
+
+def test_parallel_group_keys_cover_every_member():
+    """PARALLEL_GROUPS is keyed by every member id, not just one entry
+    point — so the walker recognizes the group whether it's reached via the
+    forward chain or via a solo retry route that targets one member
+    directly (e.g. arbiter's test_gap -> "verify")."""
+    for key, group in PARALLEL_GROUPS.items():
+        assert key in group
+        for member in group:
+            assert PARALLEL_GROUPS.get(member) == group, (
+                f"{member!r} is in group {sorted(group)!r} but PARALLEL_GROUPS[{member!r}] doesn't match"
             )

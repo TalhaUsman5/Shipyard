@@ -4,6 +4,7 @@ engine walk — node lifecycle, budgets, the append-only trace log, and the
 listing metadata used to pick a session to resume.
 """
 import os
+import threading
 
 import pytest
 
@@ -18,6 +19,29 @@ def test_record_event_appends_and_assigns_increasing_seq():
     assert seqs == sorted(seqs)
     assert seqs == list(range(len(seqs)))
     assert s.data["events"][-1]["type"] == "B"
+
+
+def test_record_event_is_safe_under_concurrent_callers():
+    """Regression test for the race a parallel_groups fork (build/verify —
+    see graph.py) introduced: two threads calling record_event on the same
+    Session near-simultaneously used to be able to read the same
+    "len(events)" before either appended, producing duplicate seq values
+    and corrupting the append-only trace's ordering guarantee. Session._lock
+    fixes this — this hammers it with real concurrent threads rather than
+    just asserting the lock exists."""
+    s = sessions.Session("feat", "proj")
+    n = 20
+    threads = [threading.Thread(target=s.record_event, args=(f"EVENT_{i}",)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    seqs = sorted(e["seq"] for e in s.data["events"])
+    assert seqs == list(range(n)), "concurrent record_event calls must never collide on seq"
+
+    logged = sessions.load_event_log(s.id)
+    assert sorted(e["seq"] for e in logged) == list(range(n)), "the on-disk trace must match too"
 
 
 def test_node_lifecycle():
@@ -137,6 +161,78 @@ def test_list_sessions_reports_project_path_and_resumable():
     assert row2["resumable"] is False
 
 
+def test_list_sessions_filters_by_status_and_project_path():
+    s1 = sessions.Session("feat", "proj-a")
+    s1.finish("failed_needs_human")
+    s2 = sessions.Session("feat", "proj-b")
+    s2.finish("completed")
+
+    only_stuck = sessions.list_sessions(status="failed_needs_human")
+    assert {r["id"] for r in only_stuck} == {s1.id}
+
+    only_proj_b = sessions.list_sessions(project_path="proj-b")
+    assert {r["id"] for r in only_proj_b} == {s2.id}
+
+
+def test_list_sessions_filters_by_since():
+    s_old = sessions.Session("feat", "proj")
+    s_old.data["started_at"] = 100.0
+    s_old.save()
+    s_new = sessions.Session("feat", "proj")
+    s_new.data["started_at"] = 200.0
+    s_new.save()
+
+    rows = sessions.list_sessions(since=150.0)
+    assert {r["id"] for r in rows} == {s_new.id}
+
+
+def test_node_durations_sums_across_retries(monkeypatch):
+    # consumed in order: Session.__init__'s started_at, then one pair per
+    # record_event call below (start1, end1, start2, end2)
+    times = iter([0.0, 100.0, 105.0, 110.0, 118.0])
+    monkeypatch.setattr(sessions.time, "time", lambda: next(times))
+
+    s = sessions.Session("feat", "proj")
+    s.record_event("NODE_STARTED", "build")
+    s.record_event("NODE_SUCCEEDED", "build")
+    s.record_event("NODE_STARTED", "build")
+    s.record_event("NODE_FAILED", "build")
+
+    durations = sessions.node_durations(s.id)
+    assert durations["build"] == pytest.approx(5.0 + 8.0)
+
+
+def test_node_durations_ignores_a_node_still_in_progress(monkeypatch):
+    times = iter([0.0, 100.0])
+    monkeypatch.setattr(sessions.time, "time", lambda: next(times))
+
+    s = sessions.Session("feat", "proj")
+    s.record_event("NODE_STARTED", "build")  # never finishes
+
+    assert sessions.node_durations(s.id) == {}
+
+
+def test_node_durations_returns_empty_dict_for_a_session_with_no_log():
+    assert sessions.node_durations("does-not-exist") == {}
+
+
+def test_slowest_nodes_across_recent_aggregates_and_sorts(monkeypatch):
+    times = iter([0.0, 100.0, 110.0, 0.0, 100.0, 101.0])
+    monkeypatch.setattr(sessions.time, "time", lambda: next(times))
+
+    s1 = sessions.Session("feat", "proj")
+    s1.record_event("NODE_STARTED", "build")
+    s1.record_event("NODE_SUCCEEDED", "build")  # 10s
+
+    s2 = sessions.Session("feat", "proj")
+    s2.record_event("NODE_STARTED", "verify")
+    s2.record_event("NODE_SUCCEEDED", "verify")  # 1s
+
+    result = sessions.slowest_nodes_across_recent(limit=20)
+    assert result[0] == {"node_id": "build", "total_seconds": 10.0, "run_count": 1}
+    assert result[1] == {"node_id": "verify", "total_seconds": 1.0, "run_count": 1}
+
+
 def test_build_report_summarizes_a_completed_run():
     s = sessions.Session("feat", "proj")
     s.node_succeeded("plan", {"title": "x", "constraints": []})
@@ -144,7 +240,7 @@ def test_build_report_summarizes_a_completed_run():
     s.node_succeeded("verify", {"files": [{"path": "test/a.test.js", "content": "x"}]})
     s.node_succeeded("test_gate", {"passed": True})
     s.node_succeeded("review", {"approved": True, "issues": [], "summary": "ok"})
-    s.node_succeeded("calibrate", {"pattern": "a pattern"})
+    s.node_succeeded("calibrate", {"patterns": ["a pattern"]})
     s.finish("completed")
 
     report = sessions.build_report(s.data)
@@ -152,4 +248,38 @@ def test_build_report_summarizes_a_completed_run():
     assert report["files_written"]["implementation"] == ["src/a.js"]
     assert report["files_written"]["tests"] == ["test/a.test.js"]
     assert report["test_result"] == {"passed": True}
-    assert report["calibrated_pattern"] == "a pattern"
+    assert report["calibrated_patterns"] == ["a pattern"]
+
+
+def test_total_tokens_sums_every_node_regardless_of_kind():
+    s = sessions.Session("feat", "proj")
+    s.node_succeeded("plan", {"title": "x"}, tokens={"input": 100, "output": 50})
+    s.node_succeeded("build", {"files": []}, tokens={"input": 200, "output": 75})
+    # a gate's tokens are usually None (no LLM call) — must not blow up
+    s.node_succeeded("test_gate", {"passed": True}, tokens=None)
+
+    totals = sessions.total_tokens(s.data)
+    assert totals == {"input": 300, "output": 125, "total": 425}
+
+
+def test_total_tokens_is_zero_for_a_session_with_no_nodes_yet():
+    s = sessions.Session("feat", "proj")
+    assert sessions.total_tokens(s.data) == {"input": 0, "output": 0, "total": 0}
+
+
+def test_build_report_includes_the_token_rollup():
+    s = sessions.Session("feat", "proj")
+    s.node_succeeded("plan", {"title": "x"}, tokens={"input": 10, "output": 5})
+    s.finish("failed")
+
+    report = sessions.build_report(s.data)
+    assert report["tokens"] == {"input": 10, "output": 5, "total": 15}
+
+
+def test_list_sessions_surfaces_a_per_run_token_total():
+    s = sessions.Session("feat", "proj")
+    s.node_succeeded("plan", {"title": "x"}, tokens={"input": 10, "output": 5})
+    s.finish("failed")
+
+    row = next(r for r in sessions.list_sessions() if r["id"] == s.id)
+    assert row["tokens"] == 15

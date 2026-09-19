@@ -1,9 +1,10 @@
 # Software Factory
 
 A custom-built harness — not Claude Code — using an LLM (any OpenAI-compatible
-model you configure) as the orchestrating intelligence behind eight
-specialized roles. You author and run the control loop yourself, in plain
-Python, so every decision the harness makes is visible to you.
+model you configure) as the orchestrating intelligence behind seven
+specialized roles, plus one human checkpoint (`plan_review`) before any of
+them start writing code. You author and run the control loop yourself, in
+plain Python, so every decision the harness makes is visible to you.
 
 This is a **learning project**, scoped deliberately small: one feature per
 run, one target project at a time, no git/CI automation. Every layer is the
@@ -19,12 +20,13 @@ a generic engine (`engine.py`) that has no built-in knowledge of what any
 node does — only how to run one, gate on its result, and route on failure.
 
 ```
-plan -> scope_gate --pass--> build -> verify -> test_gate --pass--> review -> review_gate --pass--> calibrate -> done
-           |                                |                              |
-         fail                             fail                           fail
+                       ,-> build  -,
+plan -> plan_review --+           +-> test_gate --pass--> review -> review_gate --pass--> calibrate -> done
+           |           `-> verify -'         |                              |
+         reject                           fail                           fail
            v                                v                              v
          plan                            arbiter                  review_arbiter
-budget: scope_retry x2 (SHARED, see below) (bug / noise / spec_gap / ambiguity / test_gap) (implementation_gap / scope_creep / test_gap)
+   (human-paced, no budget)   (bug / noise / spec_gap / ambiguity / test_gap) (implementation_gap / scope_creep / test_gap)
                   bug      -> build (verify reused)          budget: build_retry x4
                   noise    -> test_gate (rerun as-is)         budget: build_retry x4
                   spec_gap -> plan (plan/build/verify redone) budget: plan_retry x1
@@ -32,23 +34,39 @@ budget: scope_retry x2 (SHARED, see below) (bug / noise / spec_gap / ambiguity /
                   test_gap -> verify (verify redone)          budget: test_retry x1 (SHARED, see below)
 
                   implementation_gap -> build (build/review redone)      budget: review_retry x6
-                  scope_creep        -> plan (plan/build/verify/review redone) budget: scope_retry x2 (SHARED, see below)
+                  scope_creep        -> plan (plan/build/verify/review redone) budget: scope_retry x2
                   test_gap           -> verify (verify/review redone)   budget: test_retry x1 (SHARED, see below)
 ```
 
-`scope_gate` runs right after `plan`, before any `build`/`verify`/`review`
-work happens — it's an LLM judgment call (not a deterministic check like
-`test_gate`/`review_gate`) that asks whether the generated contract is
-actually grounded in the original feature request, or whether the Planner
-invented requirements nobody asked for. It's the *proactive* version of
-`review_arbiter`'s `scope_creep` check, added after watching several real
-runs pay for a full `build` -> `verify` -> `review` cycle only to discover
-at the very end that the contract itself had already overshot the ask —
-catching it here, before any of that work happens, is strictly cheaper. It
-shares the `scope_retry` budget with `scope_creep` (same underlying
-resource — "how many times will we let the contract get renegotiated" —
-reached from two different triggers), so both routes declare the same
-`max_uses` (`tests/test_graph.py` enforces this).
+`plan_review` runs right after `plan`, before any `build`/`verify`/`review`
+work happens: it pauses the run and hands the generated contract to a
+human, who either approves it (straight on to `build`) or rejects it with
+feedback (back to `plan`, which re-derives the contract using that
+feedback, then pauses at `plan_review` again). It has no retry budget — a
+human decides how many refinement rounds are worth doing, not a fixed
+counter — and an approval is trusted across a crash/resume (see
+`graph.py`'s docstring): a human isn't asked to re-approve the exact same
+contract just because something unrelated crashed later in the pipeline.
+
+This replaced an earlier automated `scope_gate`, an LLM judgment call
+asking the same "is this contract actually grounded in the feature
+request" question `review_arbiter`'s `scope_creep` check below asks
+reactively, just proactively — added after watching several real runs pay
+for a full `build` -> `verify` -> `review` cycle only to discover at the
+very end that the contract itself had already overshot the ask. A human
+reading the contract before any implementation effort is spent is strictly
+more trustworthy than one LLM checking another LLM's output, and it's the
+one point in the pipeline a person is guaranteed to look at the plan
+before real work starts on it.
+
+`build` and `verify` run **concurrently**, not sequentially — see
+`graph.PARALLEL_GROUPS` and `engine._run_parallel_group`. Neither depends
+on the other's output (the Verifier is deliberately never given
+`build_output`, below), and `test_gate` is the actual synchronization
+point, so there was never a reason to make one wait on the other. A route
+that resets only one of them (`bug` resets just `build`, `test_gap` resets
+just `verify`) still only reruns that one — the other stays cached, same
+as before this existed.
 
 A run only reaches a true dead end (`failed_needs_human` with nowhere left
 to go) by exhausting one of these budgets, or an unrecognized
@@ -72,8 +90,8 @@ the Planner over-elaborated it — and no amount of retrying `build` can
 satisfy a contract that overshot the ask. `review_arbiter` is given the
 original feature request specifically to catch that case, and routes back
 to `plan` to narrow the contract instead — bounded by its own small
-`scope_retry` budget (shared with `scope_gate`, 2 uses total) so a genuine
-scope correction happens a bounded number of times, not indefinitely.
+`scope_retry` budget (2 uses) so a genuine scope correction happens a
+bounded number of times, not indefinitely.
 Unlike `spec_gap`/`ambiguity` (triggered before `review`
 has ever run), `scope_creep`'s reset list includes `review` itself — it
 already ran and rejected once, so without resetting it `review_gate` would
@@ -146,11 +164,10 @@ before this change.
   call an LLM role and produce a typed output (`schemas.py`).
 - `test_gate`, `review_gate` are **gate nodes** — deterministic pass/fail
   checks (a real `npm test` run; `review.approved`). Gates always execute
-  when reached; they're never skipped or cached. `scope_gate` is also a
-  gate node — same "always re-checked, never cached" rule — but unlike the
-  other two, its handler makes a real LLM call (`agents.run_scope_check`)
-  rather than a deterministic check, so its token cost is tracked on its
-  `NODE_SUCCEEDED` event the same way a work node's is.
+  when reached; they're never skipped or cached.
+- `plan_review` is a **human_gate** node — its verdict comes from a person,
+  not a re-derivable fact, so (unlike an ordinary gate) an already-approved
+  verdict IS trusted across a resume; see `graph.py`'s docstring.
 - `arbiter` is a **classifier node** — it runs only after a failed gate and
   routes to one of a handful of pre-declared outcomes, each with its own
   bounded retry budget (see `graph.py`'s `PHASE_GRAPH`).
@@ -158,15 +175,15 @@ before this change.
 ## Prompt discipline (Planner, Verifier)
 
 Three real, live failures on the release-manager pipeline motivated
-`scope_gate` above and two prompt changes:
+`plan_review` above and two prompt changes:
 
 - An 8-point feature request came back from the Planner as 21 constraints
   and 20 acceptance criteria, some inventing non-functional requirements
   (cross-host lock races, distributed coordination) nobody asked for.
   `PLANNER_SYSTEM` now has an explicit "TRACEABILITY IS MANDATORY" section
   forbidding invented requirements unless the feature request actually
-  asked for them — `scope_gate` is the mechanical backstop for when a
-  contract slips past this instruction anyway.
+  asked for them — `plan_review` is the backstop (now a human's, not an
+  LLM's) for when a contract slips past this instruction anyway.
 - The Builder and Verifier never see each other's code (by design — that's
   what makes Verifier's tests an honest check rather than a rubber stamp),
   but a real run had them independently converge on *different* signatures
@@ -182,6 +199,14 @@ Three real, live failures on the release-manager pipeline motivated
   indistinguishable from a real bug until someone reads the test file, and
   a broken `FakeGitHub` mock is exactly what forced the `arbiter`/
   `review_arbiter` `test_gap` routes described above to exist at all.
+
+`context.py`'s file-listing cap (200 files) and `execution.py`'s
+file-content cap (150KB) used to truncate silently — a role had no way to
+know its view of the project was partial. Both now say so explicitly in
+the prompt (`context.describe_snapshot`; the `CURRENT PROJECT/TEST FILES`
+note), and the file-listing cap prioritizes `contract.target_files` ahead
+of whatever directory-walk order turns up first, so a large project drops
+irrelevant files before it ever drops one the contract actually names.
 
 ## Two separate actions — don't conflate them
 
@@ -245,14 +270,22 @@ example project is included at `workspace/example-target-project/`:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Confirms the server is up |
-| POST | `/run` | `{"feature_request": str, "project_path": str}` — walks the graph from `plan`, synchronously, returns the session |
-| POST | `/sessions/{id}/resume` | Re-walks the graph for a `failed` / `failed_needs_human` / `running` session — nodes already `succeeded` are trusted and skipped; gates always re-check. Optional body: `{"grants": {"<budget_key>": N}, "grant_reason": str, "granted_by": str}` — see "Granting more retries" below |
-| GET | `/sessions` | Lists all past runs (id, status, project_path, current_node, resumable) |
-| GET | `/sessions/{id}` | Current-state snapshot for one run: per-node status/output/budgets |
-| GET | `/sessions/{id}/report` | A reviewable summary: contract, files written, test/review verdicts, calibrated pattern |
+| POST | `/run` | `{"feature_request": str, "project_path": str}` — creates the session and starts walking the graph from `plan` on a background thread; returns immediately with the session (status `"running"`, nothing executed yet) rather than blocking until the run finishes |
+| POST | `/sessions/{id}/resume` | Re-walks the graph (in the background) for a `failed` / `failed_needs_human` / `running` / `cancelled` session — nodes already `succeeded` are trusted and skipped; gates always re-check. Optional body: `{"grants": {"<budget_key>": N}, "grant_reason": str, "granted_by": str}` — see "Granting more retries" below |
+| POST | `/sessions/{id}/review` | `{"approved": bool, "feedback": str?, "node_id": str?, "reviewed_by": str?}` — submits a human decision at a paused `human_gate` (currently only `plan_review`) and continues the walk in the background. `feedback` is required when `approved` is `false` |
+| POST | `/sessions/{id}/cancel` | Signals a running session to stop at the next safe checkpoint (a node boundary, a chunk of a streaming LLM call, or a poll interval inside `npm test`). 409 if the session isn't actually running in this server process |
+| GET | `/sessions/{id}/live/{node_id}` | The raw text a currently-generating node has streamed so far (`{"node_id", "text", "running"}`) — see "Dashboard" below |
+| GET | `/sessions` | Lists all past runs (id, status, project_path, current_node, awaiting_node, resumable, total tokens). Optional `status`, `project_path` (exact match) and `since` (unix timestamp) query params — e.g. `?status=failed_needs_human&since=<7 days ago>` answers "every run that hit failed_needs_human this week" without hand-parsing JSONL |
+| GET | `/sessions/slowest-nodes` | Which node costs the most wall-clock time, aggregated across the `limit` (default 20) most-recently-started sessions — `{"nodes": [{"node_id", "total_seconds", "run_count"}]}`, slowest first |
+| GET | `/sessions/{id}` | Current-state snapshot for one run: per-node status/output/budgets, plus a `tokens` rollup (`{"input", "output", "total"}`) summed across every node — works mid-run, not just once terminal |
+| GET | `/sessions/{id}/report` | A reviewable summary: contract, files written, test/review verdicts, calibrated patterns, token rollup |
 | GET | `/sessions/{id}/trace` | The append-only evidence log — see "Proving a build came from the factory" below |
 | GET | `/dashboard` | A live view of the phase graph — see "Dashboard" below |
 | GET | `/memory` | Current contents of `AGENTS.md` |
+| GET | `/memory/promotion-candidates` | Rolling patterns that have recurred at least `min_seen` times (default 3) — read-only; see "Domain memory" below |
+
+A run now pauses at `plan_review` (status `"awaiting_review"`) until
+`/sessions/{id}/review` is called — see the phase graph section above.
 
 `project_path` is a name relative to `workspace/` — see "Isolated
 workspace" above.
@@ -272,9 +305,9 @@ It shows:
   route between resumes).
 - **The current node**, highlighted and pulsing while a node is running.
 - **A progress bar** over the eight-node happy path
-  (plan→scope_gate→build→verify→test_gate→review→review_gate→calibrate); it can
-  legitimately move backward during a retry, since a reset node really did
-  just go back to `pending`.
+  (plan→plan_review→build→verify→test_gate→review→review_gate→calibrate); it
+  can legitimately move backward during a retry, since a reset node really
+  did just go back to `pending`.
 - **Edges animating** as a pulse travels from the node that just finished
   to the one that started next, reconstructed live from consecutive
   `NODE_STARTED` events in the trace — so a retry loop (Arbiter → build,
@@ -283,6 +316,21 @@ It shows:
 - **Retry budgets**, used/effective-max per key, pulled from the graph
   snapshot and the session's current usage, with any granted top-up shown
   alongside it.
+- **A form to start a new run** — `feature_request` + `project_path`,
+  posting straight to `/run`; since that endpoint now returns immediately
+  (see "Endpoints" above), the graph view picks up the new session right
+  away instead of the page hanging until the whole run finishes.
+- **A node detail panel on click**: while a node is running, it polls
+  `/sessions/{id}/live/{node_id}` and shows the model's response streaming
+  in — genuinely what that role is generating, not a simulation. Once a
+  node finishes, the panel just shows its persisted output/error from the
+  session snapshot. Nodes with no LLM call (`test_gate`, `plan_review`)
+  only ever show their persisted result.
+- **A plan_review panel** when a run is paused awaiting review: the
+  Planner's contract, with Approve / Request changes (feedback) buttons
+  posting to `/sessions/{id}/review`.
+- **A Cancel button**, shown while a session is `running`, posting to
+  `/sessions/{id}/cancel`.
 - **The report and trace endpoints**, inline — no separate Postman calls
   needed to see the contract, files written, verdicts, or the raw
   append-only event log.
@@ -314,7 +362,24 @@ What's in it:
   that's a real discrepancy worth noticing, not a bug.
 - **Trace** — `NODE_STARTED` / `NODE_SUCCEEDED` / `NODE_FAILED` for every
   node the walker actually visited, in order, with each node's typed
-  output and token usage attached.
+  output and token usage attached. A `NODE_FAILED` carries an `error_kind`
+  when the failure happened at the inference layer itself rather than in
+  our own code — `ModelBlocked` (bad credentials or a content-policy
+  refusal), `AllowanceExhausted` (a real quota/billing ceiling, not a
+  transient limit), or `CapacityInsufficient` (the provider is rate-limited,
+  overloaded, or briefly unreachable — the one of the three plausibly worth
+  just retrying). `error_kind` is `null` for everything else — a malformed
+  JSON response, a bug in our own code — exactly as before this existed.
+  See `llm_client.py`'s `InferenceError` hierarchy and `_classify`.
+- **Secrets** — every role's prompt passes through `redaction.py` inside
+  `llm_client.call()` before it reaches the provider: credential-shaped
+  content (API keys, private key blocks, JWTs, credentials embedded in a
+  URL, …) is scrubbed and replaced with a `[REDACTED:<pattern>]` marker.
+  A `SECRET_REDACTED` event is logged whenever this fires, naming which
+  pattern(s) tripped it — never the value that was removed. Default policy
+  is redact-and-continue (a regex scanner has real false positives; this
+  keeps the pipeline usable rather than dying on a test fixture's fake
+  token) — set `FACTORY_SECRET_POLICY=block` to raise instead of redacting.
 - **Gates** — `test_gate` and `review_gate`'s `NODE_SUCCEEDED` events carry
   the real pass/fail result (actual `npm test` output; `review.approved`).
   On a `test_gate` failure, `execution.run_tests` also re-runs the suite
@@ -328,7 +393,11 @@ What's in it:
   to only be visible by eyeballing raw `npm test` stdout. It's best-effort
   only: if the project's test script isn't `node --test` under the hood,
   `structured` comes back `{}` and the Arbiter falls back to reasoning from
-  raw stdout/stderr alone, same as before this existed.
+  raw stdout/stderr alone, same as before this existed. `package.json`'s
+  `scripts.test` is checked upfront (`execution._uses_node_test_runner`) so
+  this second, redundant subprocess call is skipped outright for a project
+  that's clearly using a different test runner, rather than paying for a
+  full rerun whose result would just be thrown away.
 - **Retries** — every routing decision is its own `ROUTE_TAKEN` event
   (which classification/gate-fail, which target, which nodes got reset,
   which budget was consumed and how much is left) or `ROUTE_BUDGET_EXHAUSTED`
@@ -394,6 +463,30 @@ practice: pick the exhausted budget from the dropdown (populated from the
 session's own graph snapshot), give a reason, and click Resume — no
 Postman, no curl, no code change, no engineer in the loop.
 
+## Domain memory (AGENTS.md)
+
+Two sections, two different write rules:
+
+- **Domain Rules (Permanent)** — hand-edited only. Nothing in this codebase
+  ever writes to it, promotes a pattern into it, or retires a rule from it
+  automatically. A rule earning its way in, or one that's since proven
+  wrong, is a deliberate edit a human makes directly in the file.
+- **Recent Patterns (Rolling)** — the Calibrator appends here after a
+  successful run (`calibrate` can now extract *multiple* distinct lessons
+  per run, not just one — a run with both a bug retry and a review
+  rejection usually holds two separable lessons, not one vague merge of
+  both). Each bullet carries a machine-parseable
+  `[meta: seen=N, source=<project>]` suffix: re-deriving the same pattern
+  on a later run increments `seen` and updates `source` to the latest
+  project it came from, instead of duplicating the line (a real bug, once
+  live: 14 duplicate copies of one pattern before this existed). Capped at
+  15 entries so it can't crowd out the context window.
+
+`GET /memory/promotion-candidates?min_seen=3` surfaces rolling patterns
+that have recurred at least `min_seen` times — worth an operator's
+attention as a candidate for manual promotion into Domain Rules. It's
+read-only: it never writes anything, to Domain Rules or otherwise.
+
 ## Testing the endpoints created by a feature
 
 The factory verifies the feature it builds automatically — that's the
@@ -406,21 +499,30 @@ from Postman. The factory's API (port 8000) and the target project's API
 
 ## Model
 
-All eight roles share one model, set via `FACTORY_MODEL` in `.env`, called
-through an OpenAI-compatible client (see `llm_client.py`). Point
-`FACTORY_BASE_URL` at any OpenAI-compatible endpoint.
+All seven LLM roles share one model, set via `FACTORY_MODEL` in `.env`,
+called through an OpenAI-compatible client (see `llm_client.py`) that
+streams every response — both to give the dashboard live output and to
+make cancellation responsive mid-call — and transparently falls back to a
+plain (non-streaming) call if the configured endpoint doesn't support
+`stream=True`. Point `FACTORY_BASE_URL` at any OpenAI-compatible endpoint.
+
+Every call also passes through the secrets boundary (`redaction.py`) and
+provider-failure classification (`llm_client.InferenceError` and its
+subclasses) described in "Durable state" above. `FACTORY_SECRET_POLICY`
+(`redact`, the default, or `block`) is the only other environment
+variable either of those introduces.
 
 ## The 11 harness components, and where they live
 
 | Component | File |
 |---|---|
-| Instructions | Per-role system prompts in `agents.py` |
+| Instructions | Per-role system prompts, one file per role under `prompts/` (loaded fresh on every call via `prompts.py` — editing a `.md` file takes effect on the next call, no restart) |
 | Context delivery | `context.py` |
 | Model | `llm_client.py` |
 | Memory | `memory.py`, `AGENTS.md` |
 | Topology | `graph.py` — the phase graph as data (nodes, gates, routes, retry budgets) |
 | Durable state | `sessions.py` — `sessions/*.json` (current-state snapshot) + `sessions/*.events.jsonl` (append-only evidence log) |
-| Sub-agents | The eight `run_*` functions in `agents.py` |
+| Sub-agents | The seven `run_*` functions in `agents.py` (contract scope is now checked by the `plan_review` human gate, not an eighth LLM role) |
 | Orchestration | `engine.py` — the generic walker + `NODE_HANDLERS` (the only code that knows what each node id means) |
 | Skills / procedures | Domain Rules section of `AGENTS.md` |
 | Execution environment | `execution.py` (sandboxed writes, real test runner) |
@@ -433,13 +535,27 @@ through an OpenAI-compatible client (see `llm_client.py`). Point
 
 - No git/PR automation — code lands on disk, you review and commit it yourself.
 - Retries are capped per route (`build_retry`: 4, `plan_retry`: 1,
-  `ambiguity_retry`: 1, `review_retry`: 6, `scope_retry`: 2 — shared between
-  `scope_gate` and `review_arbiter`'s `scope_creep` — `test_retry`: 1)
+  `ambiguity_retry`: 1, `review_retry`: 6, `scope_retry`: 2, `test_retry`: 1)
   plus a global 140-iteration safety net (`graph.MAX_TOTAL_ITERATIONS`) —
-  a run that exhausts any of these ends as `failed_needs_human`.
-- Resume is workspace-isolated but not process-safe: nothing stops two
-  concurrent `/run`/`/resume` calls against the same session from racing.
-  Fine for the single-operator, one-request-at-a-time use this is built for.
+  a run that exhausts any of these ends as `failed_needs_human`. `plan_review`
+  has no budget at all; a human paces it.
+- A session has exactly one *walk* active at a time (there's no protection
+  against two concurrent `/resume`/`/review` calls against the *same*
+  session racing each other) — but within that one walk, `build` and
+  `verify` genuinely run on two threads at once (see `graph.PARALLEL_GROUPS`
+  above). `Session.record_event` is locked specifically so that's safe: the
+  event log's `seq` counter can't collide, and the underlying file write is
+  atomic (`sessions.Session.save`) either way. Fine for the single-operator
+  use this is built for.
+- Cancellation is cooperative, not preemptive: it's checked at each node
+  boundary, inside the LLM streaming loop, and inside `npm test`'s wait
+  loop, so it's fast in practice, but a `POST /cancel` can't interrupt code
+  that isn't at one of those checkpoints.
+- The live-output registry (`runtime.py`) and cancel signals are in-memory
+  only, per server process — they reset on restart. A run's actual
+  progress/output is unaffected (that's all in `sessions/`), you just lose
+  the ability to cancel or see live output for whatever was mid-run at the
+  moment of restart.
 - No auth on the local API — it's meant to run on localhost only.
 - Context sent to each role is a file listing + `package.json`, not full
   file contents — fine for small, greenfield-ish features; a large existing

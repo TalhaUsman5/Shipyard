@@ -65,9 +65,11 @@
     letter-spacing: 0.03em;
   }
   .badge-running { background: #1d3a63; color: #7fb2ff; }
+  .badge-awaiting_review { background: #1d3a63; color: #60a5fa; }
   .badge-completed { background: #123a24; color: #4ade80; }
   .badge-failed_needs_human { background: #3a2712; color: #fbbf24; }
   .badge-failed { background: #3a1414; color: #f87171; }
+  .badge-cancelled { background: #3a1414; color: #fca5a5; }
   .badge-unknown { background: #2a2a2a; color: #aaa; }
 
   #autoRefreshLabel { color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
@@ -100,7 +102,7 @@
   #graphPanel { overflow-x: auto; }
   #graphSvg { width: 100%; min-width: 820px; height: auto; display: block; }
 
-  .node-box { fill: var(--panel); stroke: var(--pending); stroke-width: 2; transition: stroke 0.3s, fill 0.3s; }
+  .node-box { fill: var(--panel); stroke: var(--pending); stroke-width: 2; transition: stroke 0.3s, fill 0.3s; cursor: pointer; }
   .node-box.status-running { stroke: var(--running); }
   .node-box.status-succeeded { stroke: var(--succeeded); }
   .node-box.status-failed { stroke: var(--failed); }
@@ -153,7 +155,7 @@
 
   #reportPanel .issue { margin: 4px 0 4px 16px; }
   #reportPanel .files { color: var(--text-dim); font-size: 12px; }
-  #reportPanel pre { white-space: pre-wrap; word-break: break-word; font-size: 11.5px; background: #0e1626; padding: 8px; border-radius: 6px; max-height: 160px; overflow-y: auto; }
+  #reportPanel pre, #nodeDetailPanel pre { white-space: pre-wrap; word-break: break-word; font-size: 11.5px; background: #0e1626; padding: 8px; border-radius: 6px; max-height: 260px; overflow-y: auto; }
 
   .empty { color: var(--text-dim); font-style: italic; }
   .section-gap { margin-top: 16px; }
@@ -166,6 +168,7 @@
   <select id="sessionSelect"></select>
   <span id="statusBadge" class="badge-unknown">—</span>
   <button id="refreshBtn">Refresh now</button>
+  <button id="cancelBtn" hidden style="border-color: var(--failed); color: var(--failed);">Cancel run</button>
   <label id="autoRefreshLabel">
     <input type="checkbox" id="autoRefreshToggle" checked /> Auto-refresh
   </label>
@@ -179,7 +182,7 @@
         <div id="progressText"><span id="progressLabel">—</span><span id="progressPct">0%</span></div>
         <div id="progressBarOuter"><div id="progressBarInner"></div></div>
       </div>
-      <svg id="graphSvg" viewBox="0 0 1420 500" xmlns="http://www.w3.org/2000/svg">
+      <svg id="graphSvg" viewBox="0 0 1610 500" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-fwd)"></path>
@@ -194,6 +197,11 @@
       </svg>
     </div>
 
+    <div class="panel section-gap" id="nodeDetailPanel">
+      <h2 id="nodeDetailTitle">Node detail</h2>
+      <div id="nodeDetailBody"><div class="empty">Click a node to inspect it.</div></div>
+    </div>
+
     <div class="panel section-gap" id="logPanelWrap">
       <h2>Event trace (append-only)</h2>
       <div id="logPanel"><div class="empty">No session selected.</div></div>
@@ -201,7 +209,49 @@
   </div>
 
   <div>
-    <div class="panel" id="budgetsPanel">
+    <div class="panel" id="newRunPanel">
+      <h2>Start a run</h2>
+      <table class="kv">
+        <tr><td>Feature request</td><td>
+          <textarea id="newRunFeature" rows="3" style="width:100%; resize:vertical; background:var(--bg); color:var(--text); border:1px solid var(--panel-border); border-radius:6px; padding:6px;" placeholder="Add a greet(name) helper that says hello"></textarea>
+        </td></tr>
+        <tr><td>Project path</td><td>
+          <input id="newRunPath" type="text" style="width:100%;" placeholder="example-target-project" />
+        </td></tr>
+      </table>
+      <div style="margin-top: 10px;">
+        <button id="startRunBtn">Start run</button>
+      </div>
+      <div id="newRunStatus" style="margin-top: 8px; font-size: 12px; color: var(--text-dim);"></div>
+    </div>
+
+    <div class="panel section-gap" id="planReviewPanel" hidden>
+      <h2>Plan review</h2>
+      <div id="planReviewBody"></div>
+      <input type="hidden" id="planReviewNodeId" />
+      <div style="margin-top: 10px; display:flex; gap: 8px;">
+        <button id="planReviewApproveBtn" style="border-color: var(--succeeded); color: var(--succeeded);">Approve</button>
+        <button id="planReviewToggleFeedbackBtn">Request changes…</button>
+      </div>
+      <div id="planReviewFeedbackWrap" hidden style="margin-top: 10px;">
+        <textarea id="planReviewFeedback" rows="3" style="width:100%; resize:vertical; background:var(--bg); color:var(--text); border:1px solid var(--panel-border); border-radius:6px; padding:6px;" placeholder="What should the Planner change?"></textarea>
+        <div style="margin-top: 8px;">
+          <button id="planReviewSubmitFeedbackBtn">Submit feedback</button>
+        </div>
+      </div>
+      <div id="planReviewStatus" style="margin-top: 8px; font-size: 12px; color: var(--text-dim);"></div>
+    </div>
+
+    <div class="panel section-gap" id="tokensPanel">
+      <h2>Tokens (this run)</h2>
+      <table class="kv" id="tokensTable">
+        <tr><td>Input</td><td id="tokensInput">—</td></tr>
+        <tr><td>Output</td><td id="tokensOutput">—</td></tr>
+        <tr><td>Total</td><td id="tokensTotal">—</td></tr>
+      </table>
+    </div>
+
+    <div class="panel section-gap" id="budgetsPanel">
       <h2>Retry budgets</h2>
       <table class="kv" id="budgetsTable"><tr><td colspan="2" class="empty">—</td></tr></table>
     </div>
@@ -249,15 +299,16 @@ const API = "";
 // ---------------------------------------------------------------------
 const POS = {
   plan:        {x:   70, y: 80, w: 130, h: 56},  // 70   -> 200
-  build:       {x:  260, y: 80, w: 130, h: 56},  // 260  -> 390
-  verify:      {x:  450, y: 80, w: 130, h: 56},  // 450  -> 580
-  test_gate:   {x:  640, y: 80, w: 130, h: 56},  // 640  -> 770
-  review:      {x:  830, y: 80, w: 130, h: 56},  // 830  -> 960
-  review_gate: {x: 1020, y: 80, w: 150, h: 56},  // 1020 -> 1170
-  calibrate:   {x: 1230, y: 80, w: 130, h: 56},  // 1230 -> 1360 (60px clear of review_gate)
-  arbiter:     {x:  640, y: 250, w: 130, h: 56}, // centered under test_gate
+  plan_review: {x:  260, y: 80, w: 130, h: 56},  // 260  -> 390
+  build:       {x:  450, y: 80, w: 130, h: 56},  // 450  -> 580
+  verify:      {x:  640, y: 80, w: 130, h: 56},  // 640  -> 770
+  test_gate:   {x:  830, y: 80, w: 130, h: 56},  // 830  -> 960
+  review:      {x: 1020, y: 80, w: 130, h: 56},  // 1020 -> 1150
+  review_gate: {x: 1210, y: 80, w: 150, h: 56},  // 1210 -> 1360
+  calibrate:   {x: 1420, y: 80, w: 130, h: 56},  // 1420 -> 1550 (60px clear of review_gate)
+  arbiter:     {x:  830, y: 250, w: 130, h: 56}, // centered under test_gate
 };
-const CANVAS_W = 1420;
+const CANVAS_W = 1610;
 
 let FALLBACK_ROW = 0;
 function posFor(id) {
@@ -279,9 +330,12 @@ let state = {
   lastStartedNode: null,
   pollTimer: null,
   edgeElByKey: {},         // "from|to" -> path element, for pulse animation
+  lastData: null,          // most recent GET /sessions/{id} snapshot
+  detailNodeId: null,      // node currently shown in the detail panel, if any
+  detailTimer: null,       // fast poll timer for that node's /live/ endpoint
 };
 
-const CORE_PATH = ["plan", "build", "verify", "test_gate", "review", "review_gate", "calibrate"];
+const CORE_PATH = ["plan", "plan_review", "build", "verify", "test_gate", "review", "review_gate", "calibrate"];
 
 // ---------------------------------------------------------------------
 // Fetch helpers
@@ -425,6 +479,8 @@ function drawGraphShell(graphNodes) {
     attempts.textContent = "";
     g.appendChild(attempts);
 
+    g.addEventListener("click", () => openNodeDetail(id));
+
     nodesLayer.appendChild(g);
   }
 }
@@ -515,7 +571,9 @@ function updateProgress(nodes, currentNode, status) {
   document.getElementById("progressPct").textContent = pct + "%";
   let label;
   if (status === "completed") label = "Done — all phases succeeded";
-  else if (status === "failed_needs_human") label = `Stopped for human review at "${currentNode}"`;
+  else if (status === "awaiting_review") label = `Awaiting review at "${currentNode}"`;
+  else if (status === "cancelled") label = `Cancelled at "${currentNode}"`;
+  else if (status === "failed_needs_human") label = `Stopped — budget exhausted at "${currentNode}"`;
   else if (status === "failed") label = `Failed at "${currentNode}"`;
   else label = `Step ${succeeded + 1} of ${CORE_PATH.length}: ${currentNode || "—"}`;
   document.getElementById("progressLabel").textContent = label;
@@ -524,6 +582,13 @@ function updateProgress(nodes, currentNode, status) {
 // ---------------------------------------------------------------------
 // Budgets panel
 // ---------------------------------------------------------------------
+function updateTokens(tokens) {
+  const t = tokens || {input: 0, output: 0, total: 0};
+  document.getElementById("tokensInput").textContent = t.input.toLocaleString();
+  document.getElementById("tokensOutput").textContent = t.output.toLocaleString();
+  document.getElementById("tokensTotal").textContent = t.total.toLocaleString();
+}
+
 function budgetKeysFromGraph(graphNodes) {
   const maxByKey = {};
   for (const spec of Object.values(graphNodes || {})) {
@@ -570,7 +635,7 @@ function updateStatusBadge(status) {
 // engineer needed: this is the whole point of Session.grant_budget. Must
 // match sessions.py's RESUMABLE_STATUSES.
 // ---------------------------------------------------------------------
-const RESUMABLE_STATUSES = ["failed", "failed_needs_human", "running"];
+const RESUMABLE_STATUSES = ["failed", "failed_needs_human", "running", "cancelled"];
 
 function updateResumePanel(status, graphNodes) {
   const resumable = RESUMABLE_STATUSES.includes(status);
@@ -677,7 +742,7 @@ async function loadReport(sessionId) {
         <tr><td>Description</td><td>${escapeHtml(contract.description || "—")}</td></tr>
         <tr><td>Test result</td><td>${report.test_result ? (report.test_result.passed ? "passed" : "failed") : "—"}</td></tr>
         <tr><td>Review</td><td>${review.approved === true ? "approved" : review.approved === false ? "rejected" : "—"}</td></tr>
-        <tr><td>Calibrated pattern</td><td>${escapeHtml(report.calibrated_pattern || "—")}</td></tr>
+        <tr><td>Calibrated patterns</td><td>${(report.calibrated_patterns || []).map(escapeHtml).join("<br>") || "—"}</td></tr>
       </table>
       <div class="section-gap files">
         <div><b>Implementation files</b> (${(report.files_written.implementation || []).length})</div>
@@ -697,15 +762,212 @@ function escapeHtml(s) {
 }
 
 // ---------------------------------------------------------------------
+// Node detail panel — click a node to inspect it. While it's running,
+// polls /sessions/{id}/live/{nodeId} on a fast interval and shows the raw
+// text a role is streaming out right now; once it's done, just shows the
+// persisted output already sitting in the session snapshot (no need for a
+// second endpoint there).
+// ---------------------------------------------------------------------
+function openNodeDetail(nodeId) {
+  state.detailNodeId = nodeId;
+  renderNodeDetailStatic();
+  stopDetailPolling();
+  const node = state.lastData && state.lastData.nodes && state.lastData.nodes[nodeId];
+  if (node && node.status === "running") startDetailPolling();
+}
+
+function renderNodeDetailStatic() {
+  const nodeId = state.detailNodeId;
+  if (!nodeId) return;
+  document.getElementById("nodeDetailTitle").textContent = "Node detail — " + nodeId;
+  const data = state.lastData;
+  const node = data && data.nodes && data.nodes[nodeId];
+  const body = document.getElementById("nodeDetailBody");
+  const status = node ? node.status : "pending";
+
+  if (!node || status === "pending") {
+    body.innerHTML = `<div class="empty">Not started yet.</div>`;
+  } else if (status === "running") {
+    body.innerHTML = `<div class="empty">Generating…</div><pre id="nodeDetailStream"></pre>`;
+  } else if (status === "failed") {
+    body.innerHTML = `<div style="color:var(--failed); margin-bottom:6px;">Failed</div><pre>${escapeHtml(node.error || "")}</pre>`;
+  } else {
+    body.innerHTML = `<pre>${escapeHtml(JSON.stringify(node.output, null, 2))}</pre>`;
+  }
+}
+
+async function pollDetailStream() {
+  const nodeId = state.detailNodeId;
+  const id = state.sessionId;
+  if (!nodeId || !id) return;
+  try {
+    const live = await getJSON(`${API}/sessions/${id}/live/${encodeURIComponent(nodeId)}`);
+    const streamEl = document.getElementById("nodeDetailStream");
+    if (streamEl) streamEl.textContent = live.text || "(waiting for output…)";
+    if (!live.running) {
+      // The node finished since the last poll — stop hammering /live and
+      // switch to the persisted view once the next full refresh lands.
+      stopDetailPolling();
+      await refreshOnce();
+    }
+  } catch (e) {
+    // transient — the next tick tries again
+  }
+}
+
+function startDetailPolling() {
+  stopDetailPolling();
+  pollDetailStream();
+  state.detailTimer = setInterval(() => pollDetailStream(), 700);
+}
+
+function stopDetailPolling() {
+  if (state.detailTimer) clearInterval(state.detailTimer);
+  state.detailTimer = null;
+}
+
+// ---------------------------------------------------------------------
+// Plan review panel — shown when a run is paused at a human_gate. Only
+// "plan_review" exists today, but this reads awaiting_node rather than
+// hardcoding that id, so a future human_gate needs no dashboard change
+// beyond this panel already knowing how to render a Contract.
+// ---------------------------------------------------------------------
+function renderPlanReviewPanel(data) {
+  const panel = document.getElementById("planReviewPanel");
+  const awaiting = data.status === "awaiting_review" ? data.awaiting_node : null;
+  panel.hidden = !awaiting;
+  if (!awaiting) return;
+
+  document.getElementById("planReviewNodeId").value = awaiting;
+  const contract = (data.nodes.plan && data.nodes.plan.output) || {};
+  const list = arr => (arr && arr.length) ? `<ul style="margin:4px 0 4px 16px;">${arr.map(i => `<li>${escapeHtml(i)}</li>`).join("")}</ul>` : "—";
+  document.getElementById("planReviewBody").innerHTML = `
+    <div style="margin-bottom:8px; color:var(--text-dim); font-size:12px;">Awaiting review at <b>${escapeHtml(awaiting)}</b></div>
+    <table class="kv">
+      <tr><td>Title</td><td>${escapeHtml(contract.title || "—")}</td></tr>
+      <tr><td>Description</td><td>${escapeHtml(contract.description || "—")}</td></tr>
+      <tr><td>Requirements</td><td>${list(contract.requirements)}</td></tr>
+      <tr><td>Constraints</td><td>${list(contract.constraints)}</td></tr>
+      <tr><td>Acceptance criteria</td><td>${list(contract.acceptance_criteria)}</td></tr>
+      <tr><td>Out of scope</td><td>${list(contract.out_of_scope)}</td></tr>
+    </table>
+  `;
+}
+
+async function submitPlanReview(approved) {
+  const id = state.sessionId;
+  const nodeId = document.getElementById("planReviewNodeId").value;
+  const statusEl = document.getElementById("planReviewStatus");
+  let feedback = null;
+  if (!approved) {
+    feedback = document.getElementById("planReviewFeedback").value.trim();
+    if (!feedback) {
+      statusEl.style.color = "var(--failed)";
+      statusEl.textContent = "Feedback is required to request changes.";
+      return;
+    }
+  }
+  statusEl.style.color = "var(--text-dim)";
+  statusEl.textContent = approved ? "Approving…" : "Submitting feedback…";
+  try {
+    const r = await fetch(`${API}/sessions/${id}/review`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({node_id: nodeId, approved, feedback}),
+    });
+    if (!r.ok) {
+      const detail = await r.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${r.status}`);
+    }
+    statusEl.style.color = "var(--succeeded)";
+    statusEl.textContent = "Submitted — refreshing…";
+    document.getElementById("planReviewFeedback").value = "";
+    document.getElementById("planReviewFeedbackWrap").hidden = true;
+    await refreshOnce();
+    if (document.getElementById("autoRefreshToggle").checked) startPolling();
+  } catch (err) {
+    statusEl.style.color = "var(--failed)";
+    statusEl.textContent = "Failed: " + err.message;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Start a run
+// ---------------------------------------------------------------------
+async function startNewRun() {
+  const feature = document.getElementById("newRunFeature").value.trim();
+  const projectPath = document.getElementById("newRunPath").value.trim();
+  const statusEl = document.getElementById("newRunStatus");
+  if (!feature || !projectPath) {
+    statusEl.style.color = "var(--failed)";
+    statusEl.textContent = "Feature request and project path are both required.";
+    return;
+  }
+  const btn = document.getElementById("startRunBtn");
+  btn.disabled = true;
+  statusEl.style.color = "var(--text-dim)";
+  statusEl.textContent = "Starting…";
+  try {
+    const r = await fetch(`${API}/run`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({feature_request: feature, project_path: projectPath}),
+    });
+    if (!r.ok) {
+      const detail = await r.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${r.status}`);
+    }
+    const session = await r.json();
+    statusEl.style.color = "var(--succeeded)";
+    statusEl.textContent = "Started — " + session.id;
+    await loadSessions(false);
+    document.getElementById("sessionSelect").value = session.id;
+    await selectSession(session.id);
+  } catch (err) {
+    statusEl.style.color = "var(--failed)";
+    statusEl.textContent = "Failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Cancel a run
+// ---------------------------------------------------------------------
+async function doCancel() {
+  const id = state.sessionId;
+  if (!id) return;
+  const btn = document.getElementById("cancelBtn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/sessions/${id}/cancel`, {method: "POST"});
+    if (!r.ok) {
+      const detail = await r.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${r.status}`);
+    }
+    await refreshOnce();
+  } catch (err) {
+    alert("Cancel failed: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------
 // Main poll cycle
 // ---------------------------------------------------------------------
 async function selectSession(id) {
   stopPolling();
+  stopDetailPolling();
   state.sessionId = id;
   state.lastEventCount = 0;
   state.lastStartedNode = null;
+  state.detailNodeId = null;
   document.getElementById("logPanel").innerHTML = `<div class="empty">Loading…</div>`;
   document.getElementById("reportBody").innerHTML = `<div class="empty">Available once the run finishes.</div>`;
+  document.getElementById("nodeDetailBody").innerHTML = `<div class="empty">Click a node to inspect it.</div>`;
+  document.getElementById("nodeDetailTitle").textContent = "Node detail";
+  document.getElementById("planReviewPanel").hidden = true;
   if (!id) return;
 
   const trace = await getJSON(`${API}/sessions/${id}/trace`);
@@ -736,14 +998,26 @@ async function refreshOnce() {
   const id = state.sessionId;
   if (!id) return;
   const data = await getJSON(`${API}/sessions/${id}`);
+  state.lastData = data;
   updateStatusBadge(data.status);
 
   for (const [nodeId, n] of Object.entries(data.nodes || {})) {
     setNodeStatus(nodeId, n.status, n.attempts, nodeId === data.current_node);
   }
   updateProgress(data.nodes || {}, data.current_node, data.status);
+  updateTokens(data.tokens);
   updateBudgets(data.budgets || {}, data.budget_grants || {}, state.graphNodes);
   updateResumePanel(data.status, state.graphNodes);
+  renderPlanReviewPanel(data);
+  document.getElementById("cancelBtn").hidden = data.status !== "running";
+
+  if (state.detailNodeId) {
+    const node = (data.nodes || {})[state.detailNodeId];
+    if (!node || node.status !== "running") {
+      stopDetailPolling();
+      renderNodeDetailStatic();
+    }
+  }
 
   // pull new trace events since last check, animate transitions
   const trace = await getJSON(`${API}/sessions/${id}/trace`);
@@ -762,7 +1036,7 @@ async function refreshOnce() {
     state.lastEventCount = events.length;
   }
 
-  const terminal = ["completed", "failed", "failed_needs_human"].includes(data.status);
+  const terminal = ["completed", "failed", "failed_needs_human", "cancelled"].includes(data.status);
   if (terminal) {
     stopPolling();
     await loadReport(id);
@@ -801,6 +1075,22 @@ document.getElementById("autoRefreshToggle").addEventListener("change", e => {
 });
 document.getElementById("resumeBtn").addEventListener("click", () => {
   doResume().catch(err => console.error(err));
+});
+document.getElementById("cancelBtn").addEventListener("click", () => {
+  doCancel().catch(err => console.error(err));
+});
+document.getElementById("startRunBtn").addEventListener("click", () => {
+  startNewRun().catch(err => console.error(err));
+});
+document.getElementById("planReviewApproveBtn").addEventListener("click", () => {
+  submitPlanReview(true).catch(err => console.error(err));
+});
+document.getElementById("planReviewToggleFeedbackBtn").addEventListener("click", () => {
+  const wrap = document.getElementById("planReviewFeedbackWrap");
+  wrap.hidden = !wrap.hidden;
+});
+document.getElementById("planReviewSubmitFeedbackBtn").addEventListener("click", () => {
+  submitPlanReview(false).catch(err => console.error(err));
 });
 
 (async function init() {
