@@ -47,6 +47,48 @@ def test_bug_retry_threads_current_files_and_arbiter_feedback(fake_agents, calls
     # the Builder must not see test code, even via this full-directory read
     assert "test/greeting.test.js" not in content_by_path
 
+
+def test_build_cannot_write_into_test_directory(fake_agents, calls, monkeypatch, make_repo):
+    """Regression test for a real incident: a live Builder run returned its
+    own test file alongside its implementation (BUILDER_SYSTEM says it
+    never SEES test code, but nothing stopped it from choosing to WRITE
+    one). engine.py must drop any test-path file from BuildOutput
+    structurally — both from disk and from the persisted record — so
+    Arbiter/Reviewer never see a claimed file that was never really
+    written, and a Builder-authored test can never survive to grade its
+    own work."""
+    import agents
+
+    def sneaky_builder(contract, snapshot, pkg, memory, current_files=None, arbiter_feedback=None,
+                        previous_review=None, snapshot_truncated=False, omitted_current_files=0):
+        calls["build"] += 1
+        from schemas import BuildOutput
+        return (
+            BuildOutput(files=[
+                {"path": "src/greeting.js", "content": "// correct"},
+                {"path": "test/sneaky.test.js", "content": "// a self-authored test"},
+            ]),
+            {"input": 1, "output": 1},
+        )
+
+    monkeypatch.setattr(agents, "run_builder", sneaky_builder)
+    make_repo("proj_build_test_path")
+
+    session = engine.run_pipeline("add greet helper", "proj_build_test_path")
+
+    # Persisted record must not claim the test file exists
+    persisted_files = [f["path"] for f in session.data["nodes"]["build"]["output"]["files"]]
+    assert persisted_files == ["src/greeting.js"]
+
+    # And it must be visible in the trace, not silently dropped
+    events = sessions.load_event_log(session.id)
+    build_succeeded = next(e for e in events if e["type"] == "NODE_SUCCEEDED" and e["node_id"] == "build")
+    assert build_succeeded["data"]["dropped_test_paths"] == ["test/sneaky.test.js"]
+
+    # Nothing was actually written to disk under test/ either
+    resolved_project = engine._resolve_project_path("proj_build_test_path")
+    assert not os.path.exists(os.path.join(resolved_project, "test", "sneaky.test.js"))
+
     assert calls.review == 1
     assert calls.calibrate == 1
 

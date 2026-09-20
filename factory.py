@@ -156,10 +156,14 @@ def get_session(session_id: str):
     data = sessions.load_session(session_id)
     if data is None:
         raise HTTPException(status_code=404, detail="session not found")
-    # Derived, not persisted — computed fresh from whatever's actually in
-    # `data` on every request (works mid-run too), so it can never drift
-    # from the per-node token counts it's summing.
-    return {**data, "tokens": sessions.total_tokens(data)}
+    # Both derived, not persisted — computed fresh from whatever's
+    # actually in `data`/the event log on every request (works mid-run
+    # too), so neither can drift from what actually happened.
+    return {
+        **data,
+        "tokens": sessions.total_tokens(data),
+        "stuck_budget_keys": sessions.stuck_run_warning(session_id),
+    }
 
 
 @app.get("/sessions/{session_id}/report")

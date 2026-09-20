@@ -6,6 +6,8 @@ contract's acceptance criteria, including edge cases and error paths. Your
 tests must be capable of failing on an incomplete or incorrect
 implementation. Use Node's built-in test runner (`node:test` and
 `node:assert`), since the target project runs `npm test` -> `node --test`.
+Use CommonJS (`require`, `module.exports`) — not ES modules — the fixed
+convention for every project in this harness.
 
 PREFER MINIMAL MOCKING. For pure/deterministic logic (version derivation,
 a release-worthiness decision, anything that's just a function of its

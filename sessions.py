@@ -324,6 +324,34 @@ def node_durations(session_id: str) -> dict:
     return totals
 
 
+def stuck_run_warning(session_id: str) -> dict:
+    """Detects the pattern that burned real time and tokens on a legacy
+    contaminated session before "start fresh" was recognized as the only
+    real fix: the SAME budget_key exhausting more than once across this
+    session's whole history. A route can only reach a SECOND exhaustion
+    on the same key after an operator granted more budget past the
+    first — so two or more exhaustions on one key means at least one
+    grant already happened and the run still hit the same wall again,
+    which is a materially different, more actionable signal than a
+    single ordinary exhaustion (the normal, expected way a budget first
+    runs out). Returns {} when nothing looks stuck — deliberately a
+    signal to consider before granting again, not a hard stop; a
+    genuinely large feature legitimately needing several grants on the
+    same key is a real possibility this can't distinguish from one that
+    never will converge."""
+    events = load_event_log(session_id)
+    if not events:
+        return {}
+    exhaustion_counts = {}
+    for event in events:
+        if event["type"] == "ROUTE_BUDGET_EXHAUSTED":
+            key = event["data"].get("budget_key")
+            if key:
+                exhaustion_counts[key] = exhaustion_counts.get(key, 0) + 1
+    repeated = {k: c for k, c in exhaustion_counts.items() if c >= 2}
+    return repeated
+
+
 def slowest_nodes_across_recent(limit: int = 20) -> list:
     """Aggregates node_durations() over the `limit` most-recently-started
     sessions — answers "which node is slowest across my last N runs"

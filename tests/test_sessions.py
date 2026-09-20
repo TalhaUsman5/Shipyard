@@ -233,6 +233,40 @@ def test_slowest_nodes_across_recent_aggregates_and_sorts(monkeypatch):
     assert result[1] == {"node_id": "verify", "total_seconds": 1.0, "run_count": 1}
 
 
+def test_stuck_run_warning_is_empty_for_a_single_exhaustion():
+    """One exhaustion is the normal, expected way a budget first runs
+    out — not itself a "stuck" signal."""
+    s = sessions.Session("feat", "proj")
+    s.record_event("ROUTE_BUDGET_EXHAUSTED", data={"budget_key": "build_retry"})
+    assert sessions.stuck_run_warning(s.id) == {}
+
+
+def test_stuck_run_warning_flags_a_key_that_exhausts_more_than_once():
+    s = sessions.Session("feat", "proj")
+    s.record_event("ROUTE_BUDGET_EXHAUSTED", data={"budget_key": "build_retry"})
+    s.record_event("BUDGET_GRANTED", data={"budget_key": "build_retry", "amount": 2})
+    s.record_event("ROUTE_BUDGET_EXHAUSTED", data={"budget_key": "build_retry"})
+    assert sessions.stuck_run_warning(s.id) == {"build_retry": 2}
+
+
+def test_stuck_run_warning_only_flags_the_repeated_key_not_a_one_off_one():
+    s = sessions.Session("feat", "proj")
+    s.record_event("ROUTE_BUDGET_EXHAUSTED", data={"budget_key": "build_retry"})
+    s.record_event("ROUTE_BUDGET_EXHAUSTED", data={"budget_key": "build_retry"})
+    s.record_event("ROUTE_BUDGET_EXHAUSTED", data={"budget_key": "test_retry"})
+    assert sessions.stuck_run_warning(s.id) == {"build_retry": 2}
+
+
+def test_stuck_run_warning_empty_for_a_session_with_no_exhaustions():
+    s = sessions.Session("feat", "proj")
+    s.node_succeeded("plan", {"title": "x"})
+    assert sessions.stuck_run_warning(s.id) == {}
+
+
+def test_stuck_run_warning_empty_for_a_missing_session():
+    assert sessions.stuck_run_warning("does-not-exist") == {}
+
+
 def test_build_report_summarizes_a_completed_run():
     s = sessions.Session("feat", "proj")
     s.node_succeeded("plan", {"title": "x", "constraints": []})

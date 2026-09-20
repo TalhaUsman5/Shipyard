@@ -499,11 +499,26 @@ from Postman. The factory's API (port 8000) and the target project's API
 
 ## Model
 
-All seven LLM roles share one model, set via `FACTORY_MODEL` in `.env`,
-called through an OpenAI-compatible client (see `llm_client.py`) that
-streams every response — both to give the dashboard live output and to
-make cancellation responsive mid-call — and transparently falls back to a
-plain (non-streaming) call if the configured endpoint doesn't support
+Roles are routed to one of three capability tiers (`llm_client.ROLE_TIERS`)
+rather than sharing a single model:
+
+| Tier | Roles | Why |
+|---|---|---|
+| `sol` (flagship) | `planner`, `builder`, `verifier`, `reviewer` | Cascading, hard-to-undo judgment calls — a bad contract or a bad review verdict ripples through the whole run |
+| `terra` (mid) | `arbiter`, `review_arbiter` | A bounded, enum-shaped classification with real stakes (misclassifying wastes a whole retry) but a narrower task than open-ended architecture/judgment |
+| `luna` (lightweight) | `calibrator` | Extracting 0+ short reusable strings from a session summary — the lowest-stakes call in the harness by a wide margin |
+
+Which tier a role needs is a code decision (`ROLE_TIERS`); which actual
+model backs a tier is environment config: set `FACTORY_MODEL_SOL`,
+`FACTORY_MODEL_TERRA`, `FACTORY_MODEL_LUNA` in `.env` to point each tier
+at a real model id. Any tier left unset falls back to the single
+`FACTORY_MODEL` — so a `.env` with only that variable configured still
+works exactly as it did before per-role tiers existed.
+
+Every call goes through an OpenAI-compatible client (see `llm_client.py`)
+that streams every response — both to give the dashboard live output and
+to make cancellation responsive mid-call — and transparently falls back to
+a plain (non-streaming) call if the configured endpoint doesn't support
 `stream=True`. Point `FACTORY_BASE_URL` at any OpenAI-compatible endpoint.
 
 Every call also passes through the secrets boundary (`redaction.py`) and

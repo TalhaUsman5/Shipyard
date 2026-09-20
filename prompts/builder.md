@@ -4,6 +4,10 @@ You receive a contract ONLY. Write a complete, working implementation that
 satisfies it. You do not see any test code — you do not know how you'll be
 checked, only what you're required to do.
 
+Use CommonJS (`require`, `module.exports`) — not ES modules (`import`,
+`export`, `"type": "module"`). This is a fixed convention for every
+project in this harness, not a per-feature choice.
+
 CURRENT PROJECT FILES, when included below, is the real, current state of
 every non-test file in the project right now — not just what a previous
 attempt of yours returned, but everything actually on disk, including

@@ -202,8 +202,30 @@ def _handle_build(ctx: RunContext) -> WorkResult:
         snapshot_truncated=ctx.snapshot_truncated,
         omitted_current_files=omitted_current_files,
     )
+
+    # Structural enforcement of BUILDER_SYSTEM's own rule ("you do not see
+    # any test code") — nothing before this stopped the Builder from
+    # choosing to WRITE one anyway. Observed live: a real run had the
+    # Builder return its own test/rate-limiter.test.js alongside its
+    # implementation. Verify's directory-replace happened to overwrite it
+    # by filename coincidence that time, but that's luck, not a guarantee
+    # — a Builder-authored test that survives means the Builder graded its
+    # own work, defeating independent verification entirely. Drop it here,
+    # structurally, the same way execution._safe_path structurally blocks
+    # a path escape rather than trusting a role not to attempt one — and
+    # mutate build_output itself (not just what gets written to disk) so
+    # the persisted record, and what Arbiter/Reviewer see later via
+    # build_output.model_dump_json(), never claims a file exists that
+    # isn't really there.
+    dropped_test_paths = [f.path for f in build_output.files if _is_test_path(f.path)]
+    if dropped_test_paths:
+        build_output.files = [f for f in build_output.files if not _is_test_path(f.path)]
+
     written = execution.apply_files(ctx.project_path, build_output.files)
-    return WorkResult(output=build_output, tokens=tokens, extra={"files_written": written})
+    extra = {"files_written": written}
+    if dropped_test_paths:
+        extra["dropped_test_paths"] = dropped_test_paths
+    return WorkResult(output=build_output, tokens=tokens, extra=extra)
 
 
 def _handle_verify(ctx: RunContext) -> WorkResult:

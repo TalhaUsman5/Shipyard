@@ -251,6 +251,12 @@
       </table>
     </div>
 
+    <div class="panel section-gap" id="stuckWarningPanel" hidden
+         style="border-color: var(--failed); background: #2a1414;">
+      <h2 style="color: var(--failed);">⚠ This may be stuck</h2>
+      <div id="stuckWarningBody" style="font-size: 13px;"></div>
+    </div>
+
     <div class="panel section-gap" id="budgetsPanel">
       <h2>Retry budgets</h2>
       <table class="kv" id="budgetsTable"><tr><td colspan="2" class="empty">—</td></tr></table>
@@ -587,6 +593,25 @@ function updateTokens(tokens) {
   document.getElementById("tokensInput").textContent = t.input.toLocaleString();
   document.getElementById("tokensOutput").textContent = t.output.toLocaleString();
   document.getElementById("tokensTotal").textContent = t.total.toLocaleString();
+}
+
+// A signal worth considering before granting again, not a hard stop — see
+// sessions.stuck_run_warning. `stuckKeys` is {budget_key: exhaustion_count}
+// for any key that has exhausted 2+ times across this session's history.
+function updateStuckWarning(stuckKeys) {
+  const panel = document.getElementById("stuckWarningPanel");
+  const keys = Object.keys(stuckKeys || {});
+  panel.hidden = keys.length === 0;
+  if (keys.length === 0) return;
+  const rows = keys.map(k => `<li><b>${escapeHtml(k)}</b> has exhausted ${stuckKeys[k]}× in this session</li>`).join("");
+  document.getElementById("stuckWarningBody").innerHTML = `
+    <p>The same budget has run out more than once, meaning it was already
+    granted more room at least once and hit the same wall again. Worth a
+    look before granting again — this pattern (not just one exhaustion)
+    is what a genuinely stuck contract or a real, recurring implementation
+    problem looks like, versus a large feature that legitimately needs a
+    few grants to converge.</p>
+    <ul style="margin:4px 0 4px 16px;">${rows}</ul>`;
 }
 
 function budgetKeysFromGraph(graphNodes) {
@@ -1006,6 +1031,7 @@ async function refreshOnce() {
   }
   updateProgress(data.nodes || {}, data.current_node, data.status);
   updateTokens(data.tokens);
+  updateStuckWarning(data.stuck_budget_keys);
   updateBudgets(data.budgets || {}, data.budget_grants || {}, state.graphNodes);
   updateResumePanel(data.status, state.graphNodes);
   renderPlanReviewPanel(data);

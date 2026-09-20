@@ -6,7 +6,12 @@ base_url) rather than the Anthropic SDK, so this harness can target any
 OpenAI-compatible endpoint. Configure via .env:
   FACTORY_API_KEY  - the API key
   FACTORY_BASE_URL - the endpoint base URL (omit to use OpenAI's default)
-  FACTORY_MODEL    - the model name to use for every role
+  FACTORY_MODEL    - fallback model, used for any role with no tier
+                      override configured below
+  FACTORY_MODEL_SOL / _TERRA / _LUNA - optional per-tier overrides (see
+                      ROLE_TIERS) — set these to route different roles to
+                      different capability/cost tiers instead of one
+                      model for everything
 """
 import os
 
@@ -16,6 +21,50 @@ import redaction
 import runtime
 
 _client = None
+
+
+# Which capability tier each role needs — a deliberate, code-owned design
+# decision (see ROADMAP.md), not something meant to vary per environment.
+# Planner/Builder/Verifier/Reviewer make cascading, hard-to-undo judgment
+# calls — a bad contract or a bad review verdict ripples through the
+# whole run — so they get the flagship tier. Arbiter/Review Arbiter make
+# a bounded, enum-shaped classification with real stakes (misclassifying
+# wastes a whole retry) but a narrower task than open-ended architecture
+# or review judgment, so a mid tier is a defensible trade — worth
+# escalating back to the flagship tier if misclassification rate ever
+# becomes a real problem. Calibrator's job (extract 0+ short reusable
+# strings from a session summary) is the lowest-stakes call in the
+# harness by a wide margin.
+ROLE_TIERS = {
+    "planner": "sol",
+    "builder": "sol",
+    "verifier": "sol",
+    "reviewer": "sol",
+    "arbiter": "terra",
+    "review_arbiter": "terra",
+    "calibrator": "luna",
+}
+
+
+def _model_for_role(role: str) -> str:
+    """Resolves a role to an actual model id: ROLE_TIERS says WHICH tier a
+    role needs (a code decision); FACTORY_MODEL_<TIER> says what model id
+    that tier currently means (an environment decision) — so swapping
+    which real model backs "sol" is a .env edit, not a code change. Any
+    role with no tier configured (an unrecognized role, or a tier whose
+    env var isn't set) falls back to the single FACTORY_MODEL, so an
+    existing .env with only that variable set keeps working exactly as
+    it did before per-role tiers existed."""
+    tier = ROLE_TIERS.get(role)
+    if tier:
+        override = os.getenv(f"FACTORY_MODEL_{tier.upper()}")
+        if override:
+            return override
+
+    model = os.getenv("FACTORY_MODEL")
+    if not model:
+        raise RuntimeError("FACTORY_MODEL is not set. Add it to .env.")
+    return model
 
 
 class InferenceError(Exception):
@@ -110,9 +159,7 @@ def call(role: str, system: str, user: str, max_tokens: int = 16000):
     empty content with finish_reason="length" before ever writing the JSON
     the caller actually wants. 4096 was observed exhausting on an
     18-requirement contract with zero completion tokens produced."""
-    model = os.getenv("FACTORY_MODEL")
-    if not model:
-        raise RuntimeError("FACTORY_MODEL is not set. Add it to .env.")
+    model = _model_for_role(role)
 
     # The secrets boundary: `user` is where every role interpolates
     # externally-derived content (the raw feature request, target-project

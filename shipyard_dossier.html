@@ -1,0 +1,548 @@
+<title>Shipyard Dossier</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ink: #14212f;
+    --paper: #f4f6f8;
+    --panel: #ffffff;
+    --line: #c7d2da;
+    --muted: #5b6b7a;
+    --accent: #1f6fa8;
+    --accent-ink: #0d3a54;
+    --found: #a5570f;
+    --found-bg: #fdf1e4;
+    --fixed: #1f7a4d;
+    --fixed-bg: #eaf6ef;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #dfe7ee;
+      --paper: #0f1a24;
+      --panel: #16232f;
+      --line: #2b3c4a;
+      --muted: #93a4b3;
+      --accent: #5fb2e8;
+      --accent-ink: #bfe2f7;
+      --found: #e6a15c;
+      --found-bg: #2c2013;
+      --fixed: #6fcf9b;
+      --fixed-bg: #10281d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #dfe7ee;
+    --paper: #0f1a24;
+    --panel: #16232f;
+    --line: #2b3c4a;
+    --muted: #93a4b3;
+    --accent: #5fb2e8;
+    --accent-ink: #bfe2f7;
+    --found: #e6a15c;
+    --found-bg: #2c2013;
+    --fixed: #6fcf9b;
+    --fixed-bg: #10281d;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background-color: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding-inline: 20px; }
+
+  header.hero {
+    padding-block: 40px 28px;
+    border-bottom: 2px solid var(--ink);
+    background: var(--paper);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 10px;
+  }
+  h1.title {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: clamp(2rem, 5vw, 3.1rem);
+    letter-spacing: -0.01em;
+    margin: 0 0 12px;
+    text-wrap: balance;
+  }
+  p.dek {
+    font-size: 1.08rem;
+    color: var(--muted);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin-top: 28px;
+  }
+  .stat {
+    background: var(--panel);
+    padding: 14px 16px;
+  }
+  .stat .num {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--accent-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .lbl {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .layout { display: grid; grid-template-columns: 220px minmax(0,1fr); gap: 40px; padding-block: 36px 80px; align-items: start; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } nav.rail { display: none; } }
+
+  nav.rail { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); font-family: var(--mono); font-size: 13px; }
+  nav.rail a { display: block; color: var(--muted); text-decoration: none; padding: 5px 0; border-left: 2px solid transparent; padding-left: 10px; }
+  nav.rail a:hover { color: var(--accent-ink); border-left-color: var(--accent); }
+
+  main { min-width: 0; }
+  section { margin-bottom: 64px; scroll-margin-top: 20px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  .sec-no { font-family: var(--mono); color: var(--accent); font-size: 14px; }
+  h2 { font-family: var(--mono); font-size: 1.5rem; margin: 0; text-wrap: balance; }
+  .sec-intro { color: var(--muted); max-width: 68ch; margin: 10px 0 24px; }
+  h3 { font-family: var(--mono); font-size: 1.05rem; margin: 28px 0 10px; }
+  p { max-width: 72ch; }
+  a { color: var(--accent-ink); }
+  code, pre, .mono { font-family: var(--mono); }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font-size: 0.9em; }
+  ul, ol { padding-left: 1.3em; max-width: 68ch; }
+  li { margin-bottom: 5px; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+
+  table.components { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  table.components th, table.components td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.components th { font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  table.components td:first-child { font-family: var(--mono); white-space: nowrap; color: var(--accent-ink); }
+  .overflow { overflow-x: auto; }
+
+  figure { margin: 0; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+  pre.mermaid { background: transparent; }
+
+  .timeline { position: relative; padding-left: 30px; border-left: 2px solid var(--line); }
+  .tl-item { position: relative; margin-bottom: 30px; }
+  .tl-item:last-child { margin-bottom: 0; }
+  .tl-num {
+    position: absolute; left: -41px; top: 0;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--panel); border: 2px solid var(--accent);
+    color: var(--accent-ink); font-family: var(--mono); font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tl-title { font-weight: 600; margin: 0 0 6px; }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 11px; letter-spacing: .03em; padding: 2px 7px; border-radius: 3px; margin-right: 6px; }
+  .tag.found { background: var(--found-bg); color: var(--found); }
+  .tag.fixed { background: var(--fixed-bg); color: var(--fixed); }
+  .evidence { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .evidence code { font-size: 0.95em; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+  .card h4 { font-family: var(--mono); font-size: 14px; margin: 0 0 8px; color: var(--accent-ink); }
+  .card p { font-size: 14px; margin: 0; }
+
+  .measure { display: flex; gap: 22px; flex-wrap: wrap; margin: 10px 0 4px; }
+  .measure .m { font-family: var(--mono); font-size: 13px; }
+  .measure .m b { display: block; font-size: 1.15rem; color: var(--accent-ink); }
+
+  footer { border-top: 1px solid var(--line); padding-block: 24px 48px; color: var(--muted); font-size: 13px; }
+</style>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Engineering dossier · harness architecture &amp; history</p>
+    <h1 class="title">Shipyard</h1>
+    <p class="dek">A phase-graph LLM orchestration harness: typed roles, deterministic gates, bounded retries, durable evidence, and a human in the one place a machine shouldn't be alone. This is its architecture, the problems that shaped it, and what building it actually taught about harness engineering.</p>
+    <div class="stat-row">
+      <div class="stat"><div class="num">7</div><div class="lbl">real sessions run</div></div>
+      <div class="stat"><div class="num">151</div><div class="lbl">tests passing</div></div>
+      <div class="stat"><div class="num">4,469</div><div class="lbl">lines of harness code</div></div>
+      <div class="stat"><div class="num">521,911</div><div class="lbl">tokens spent, all-in</div></div>
+      <div class="stat"><div class="num">2</div><div class="lbl">real GitHub releases published</div></div>
+      <div class="stat"><div class="num">7+1</div><div class="lbl">LLM roles + 1 human gate</div></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap layout">
+  <nav class="rail">
+    <a href="#harness-engineering">§1 What a harness is</a>
+    <a href="#architecture">§2 Architecture</a>
+    <a href="#phase-graph">§3 The phase graph</a>
+    <a href="#problems">§4 Problems &amp; fixes</a>
+    <a href="#optimizations">§5 Optimizations</a>
+    <a href="#lessons">§6 What we learned</a>
+    <a href="#status">§7 Current status</a>
+  </nav>
+
+  <main>
+
+    <section id="harness-engineering">
+      <div class="sec-head"><span class="sec-no">§1</span><h2>What a harness is, from scratch</h2></div>
+      <p class="sec-intro">Before Shipyard existed there was a linear script: call a model, get code back, hope. A <b>harness</b> is what you build once "hope" stops being an acceptable step in the loop.</p>
+
+      <p>An LLM is a single, stateless function call: text in, text out, no memory of whether it was right last time. A harness wraps that call with everything a single call can't provide on its own — and Shipyard's design settled on nine specific things a harness owes the work running through it:</p>
+
+      <div class="grid-2">
+        <div class="card"><h4>Typed I/O</h4><p>Every role's output is validated against a Pydantic schema the instant it comes back. Malformed output fails loudly at the boundary, not three steps later as a confusing downstream crash.</p></div>
+        <div class="card"><h4>Explicit topology</h4><p>The pipeline's shape is data (<code>graph.py</code>), not a tangle of <code>if</code>/<code>else</code> in the orchestrator. You can read the whole system's control flow without reading its code.</p></div>
+        <div class="card"><h4>Deterministic gates</h4><p>A gate is re-evaluated fresh every time it's reached — never cached, never trusted from a prior run — because the one thing worse than a slow gate is a gate that lies.</p></div>
+        <div class="card"><h4>Bounded retries</h4><p>A failure gets a specific, capped number of chances to resolve, then surfaces to a human — it never loops silently until someone notices the bill.</p></div>
+        <div class="card"><h4>Safe workspace isolation</h4><p>Every file write is checked against the project root before it touches disk. No role's output — however confidently wrong — can escape its sandbox.</p></div>
+        <div class="card"><h4>Durable evidence</h4><p>State and an append-only trace are both written to disk continuously, not assembled at the end from memory that a crash can erase.</p></div>
+        <div class="card"><h4>Resume, not restart</h4><p>An interrupted run picks up exactly where it stopped. Retrying a failure and resuming a crash turned out to be the <i>same mechanism</i> once framed correctly (§3).</p></div>
+        <div class="card"><h4>A reviewable artifact</h4><p>The output isn't just files — it's files plus a trace that proves how they came to exist, so a human reviewer inherits evidence, not a black box.</p></div>
+      </div>
+
+      <p style="margin-top:20px;">The ninth thing — the one that took the longest to earn — is knowing <b>which of these guarantees a human still has to provide</b>. Shipyard's biggest single architecture change (§4, §6) was discovering that "did this contract overshoot what was actually asked for?" is a judgment an LLM checking another LLM's output can't reliably make on its own, and building the harness to hand that one decision to a person instead of automating it away.</p>
+    </section>
+
+    <section id="architecture">
+      <div class="sec-head"><span class="sec-no">§2</span><h2>Architecture</h2></div>
+      <p class="sec-intro">Every request flows through the same five stages, regardless of which of the eight pipeline nodes triggered it. Two side channels — one durable, one ephemeral — run alongside every stage without either one owning the other.</p>
+
+      <figure>
+        <svg viewBox="0 0 920 480" role="img" aria-label="Request flow: factory.py receives a request and spawns engine.py's walker on a background thread; the walker reads graph.py's topology, dispatches to an agents.py role, which calls llm_client.py — passing through redaction.py before reaching the model provider — and execution.py writes real files to the target project. sessions.py durably persists every event alongside this flow; runtime.py bridges live streaming and cancellation back to the dashboard, in memory only.">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+            </marker>
+          </defs>
+          <g fill="none" stroke="currentColor" stroke-width="1.4" font-family="IBM Plex Mono, monospace" font-size="12">
+            <!-- main spine -->
+            <rect x="370" y="16" width="180" height="42" rx="4"></rect>
+            <text x="460" y="42" text-anchor="middle" fill="currentColor">factory.py (API)</text>
+
+            <line x1="460" y1="58" x2="460" y2="90" marker-end="url(#arrow)"></line>
+            <text x="472" y="78" fill="currentColor" font-size="11">spawns background thread</text>
+
+            <rect x="360" y="90" width="200" height="42" rx="4"></rect>
+            <text x="460" y="116" text-anchor="middle" fill="currentColor">engine.py (walker)</text>
+
+            <line x1="360" y1="111" x2="230" y2="111" marker-end="url(#arrow)"></line>
+            <rect x="60" y="90" width="170" height="42" rx="4"></rect>
+            <text x="145" y="116" text-anchor="middle" fill="currentColor">graph.py (topology)</text>
+            <text x="245" y="105" fill="currentColor" font-size="11">reads, never</text>
+            <text x="245" y="119" fill="currentColor" font-size="11">executes</text>
+
+            <line x1="460" y1="132" x2="460" y2="164" marker-end="url(#arrow)"></line>
+            <text x="472" y="152" fill="currentColor" font-size="11">dispatches per node</text>
+
+            <rect x="360" y="164" width="200" height="42" rx="4"></rect>
+            <text x="460" y="190" text-anchor="middle" fill="currentColor">agents.py (role)</text>
+
+            <line x1="460" y1="206" x2="460" y2="238" marker-end="url(#arrow)"></line>
+            <text x="472" y="226" fill="currentColor" font-size="11">system + user prompt</text>
+
+            <rect x="360" y="238" width="200" height="42" rx="4"></rect>
+            <text x="460" y="264" text-anchor="middle" fill="currentColor">llm_client.py</text>
+
+            <line x1="460" y1="280" x2="460" y2="312" marker-end="url(#arrow)"></line>
+            <rect x="345" y="312" width="230" height="36" rx="4" stroke-dasharray="3,3"></rect>
+            <text x="460" y="335" text-anchor="middle" fill="currentColor" font-size="11">redaction.py scrubs before send</text>
+
+            <line x1="460" y1="348" x2="460" y2="380" marker-end="url(#arrow)"></line>
+            <rect x="360" y="380" width="200" height="42" rx="4"></rect>
+            <text x="460" y="406" text-anchor="middle" fill="currentColor">model provider</text>
+
+            <!-- execution branch -->
+            <line x1="360" y1="185" x2="700" y2="185" marker-end="url(#arrow)"></line>
+            <rect x="700" y="164" width="180" height="42" rx="4"></rect>
+            <text x="790" y="190" text-anchor="middle" fill="currentColor">execution.py</text>
+            <line x1="790" y1="206" x2="790" y2="238" marker-end="url(#arrow)"></line>
+            <text x="800" y="226" fill="currentColor" font-size="11">real files</text>
+            <rect x="700" y="238" width="180" height="42" rx="4"></rect>
+            <text x="790" y="264" text-anchor="middle" fill="currentColor">target project</text>
+
+            <!-- sessions branch (durable) -->
+            <line x1="360" y1="100" x2="150" y2="240" marker-end="url(#arrow)"></line>
+            <rect x="30" y="240" width="200" height="42" rx="4"></rect>
+            <text x="130" y="266" text-anchor="middle" fill="currentColor">sessions.py</text>
+            <text x="140" y="222" fill="currentColor" font-size="11">every event, durable</text>
+
+            <!-- runtime branch (ephemeral) -->
+            <line x1="360" y1="253" x2="150" y2="380" marker-end="url(#arrow)" stroke-dasharray="4,3"></line>
+            <rect x="30" y="380" width="200" height="42" rx="4"></rect>
+            <text x="130" y="406" text-anchor="middle" fill="currentColor">runtime.py</text>
+            <text x="140" y="362" fill="currentColor" font-size="11">live stream + cancel, in-memory only</text>
+
+            <line x1="130" y1="380" x2="130" y2="132" stroke-dasharray="4,3" marker-end="url(#arrow)"></line>
+            <text x="20" y="132" fill="currentColor" font-size="11">GET /live/{node}</text>
+          </g>
+        </svg>
+        <figcaption>Every node's execution follows the same spine (factory → engine → agents → llm_client → provider). <code>sessions.py</code> persists the durable trace no matter what happens; <code>runtime.py</code> is a separate, in-memory-only bridge that exists purely so the dashboard can show live output and cancel a call mid-flight — losing it on a server restart costs nothing, because it never held the evidence.</figcaption>
+      </figure>
+
+      <h3>Every component, and what it actually does</h3>
+      <div class="overflow">
+      <table class="components">
+        <tr><th>File</th><th>Role</th></tr>
+        <tr><td>graph.py</td><td>The whole pipeline's topology as data — nodes, gates, classifier routes, retry budgets. Nothing here executes anything; it's read by the walker.</td></tr>
+        <tr><td>engine.py</td><td>The generic walker. Has no idea "plan" means the Planner — it just walks graph.py and calls whatever <code>NODE_HANDLERS</code> says to run. Owns retry/reset logic, the human-gate pause/resume mechanism, and running <code>build</code>/<code>verify</code> concurrently.</td></tr>
+        <tr><td>schemas.py</td><td>Every role's I/O contract as a Pydantic model — the hard validation boundary where model output re-enters the system.</td></tr>
+        <tr><td>agents.py</td><td>The seven LLM role functions. Enforces Builder/Verifier independence explicitly (Verifier is never given Build's output).</td></tr>
+        <tr><td>prompts/*.md + prompts.py</td><td>Each role's system prompt as its own file, loaded fresh on every call — editing a prompt takes effect immediately, no redeploy.</td></tr>
+        <tr><td>llm_client.py</td><td>The only place that talks to a model. Streams every call, classifies provider failures into named states, resolves each role to a capability tier, and enforces a hard request timeout.</td></tr>
+        <tr><td>redaction.py</td><td>The secrets boundary. Scans every outbound prompt for credential-shaped content before it leaves the process.</td></tr>
+        <tr><td>runtime.py</td><td>In-process, non-durable bridge: cancellation events, live streaming buffers, and the redaction-notification handoff — reset on restart by design.</td></tr>
+        <tr><td>sessions.py</td><td>The durable state snapshot and the append-only evidence trace. Thread-safe (a lock protects concurrent event writes from the parallel build/verify group) and crash-safe (atomic file replace).</td></tr>
+        <tr><td>execution.py</td><td>Sandboxed file writes, the real <code>npm test</code> runner with a working Windows-safe process-tree timeout, and TAP output parsing.</td></tr>
+        <tr><td>context.py</td><td>Assembles what a role sees of the target project — a capped, honestly-labeled file listing, prioritized by the contract's own named files.</td></tr>
+        <tr><td>memory.py</td><td>AGENTS.md's two tiers: permanent, hand-edited domain rules, and a rolling, recurrence-tracked log of patterns the Calibrator extracts.</td></tr>
+        <tr><td>factory.py</td><td>The HTTP surface. Every mutating endpoint returns immediately; the actual walk runs on a background thread.</td></tr>
+        <tr><td>dashboard.html</td><td>The live view: the graph itself, per-node status, live-streaming output, the human plan-review panel, and a warning when a budget looks stuck.</td></tr>
+        <tr><td>tools/check_github_token.py</td><td>A standalone pre-flight check for a new external integration's credentials — built after paying for the lack of one twice (§4).</td></tr>
+      </table>
+      </div>
+    </section>
+
+    <section id="phase-graph">
+      <div class="sec-head"><span class="sec-no">§3</span><h2>The phase graph</h2></div>
+      <p class="sec-intro">Ten node kinds cover the whole pipeline. <code>build</code> and <code>verify</code> run concurrently; every gate is re-checked fresh; every dead end is a bounded budget, not an infinite loop.</p>
+
+      <pre class="mermaid">
+flowchart LR
+  plan["plan<br/>(Planner)"] --> pr{{"plan_review<br/>human gate"}}
+  pr -- reject + feedback --> plan
+  pr -- approve --> build["build<br/>(Builder)"]
+  pr -- approve --> verify["verify<br/>(Verifier)"]
+  build --> tg{"test_gate<br/>real npm test"}
+  verify --> tg
+  tg -- fail --> arb{{"arbiter<br/>classifies why"}}
+  arb -- bug --> build
+  arb -- test_gap --> verify
+  arb -- "spec_gap / ambiguity" --> plan
+  arb -- noise --> tg
+  tg -- pass --> review["review<br/>(Reviewer)"]
+  review --> rg{"review_gate"}
+  rg -- fail --> rarb{{"review_arbiter"}}
+  rarb -- implementation_gap --> build
+  rarb -- test_gap --> verify
+  rarb -- scope_creep --> plan
+  rg -- pass --> cal["calibrate<br/>(Calibrator)"]
+      </pre>
+
+      <p>Every arrow into <code>plan</code>, <code>build</code>, or <code>verify</code> also resets that node's cached output — the same reset that makes a bounded retry work is what makes resuming a crashed run work too: a resume is just a walk with nothing reset, so an already-succeeded node skips itself. There is no separate "resume mechanism"; there's one walker and two ways to arrive at its starting node.</p>
+
+      <div class="panel">
+        <h3 style="margin-top:0;">Budgets, as they stand today</h3>
+        <div class="overflow">
+        <table class="components">
+          <tr><th>Route</th><th>Budget key</th><th>Max uses</th></tr>
+          <tr><td>bug / noise → build</td><td>build_retry</td><td>4</td></tr>
+          <tr><td>spec_gap → plan</td><td>plan_retry</td><td>1</td></tr>
+          <tr><td>ambiguity → plan</td><td>ambiguity_retry</td><td>1</td></tr>
+          <tr><td>implementation_gap → build</td><td>review_retry</td><td>6</td></tr>
+          <tr><td>test_gap (either classifier) → verify</td><td>test_retry</td><td>1 (shared)</td></tr>
+          <tr><td>scope_creep → plan</td><td>scope_retry</td><td>2</td></tr>
+          <tr><td>plan_review reject → plan</td><td>— none —</td><td>a human paces it, not a counter</td></tr>
+        </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="problems">
+      <div class="sec-head"><span class="sec-no">§4</span><h2>Problems found, in the order they were found</h2></div>
+      <p class="sec-intro">Every one of these surfaced by actually running the system — none were caught by code review. That's the throughline: this harness's real test suite was live operation, and the automated tests came <i>after</i>, as regression coverage for what running it for real had already taught.</p>
+
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="tl-num">1</div>
+          <div class="tl-title">No route existed for "the test is broken, not the code"</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>An Arbiter correctly diagnosed a broken test fixture in its own explanation text — but had no classification label better than <code>"bug"</code> to pick, so it sent the fix to the Builder, who never sees test code and could never touch it. A real retry burned for nothing.</p>
+          <div class="evidence">Fix: added <code>test_gap</code> to both classifiers, mirrored on the reactive (Reviewer-side) and proactive (test-gate-side) paths, sharing one budget.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">2</div>
+          <div class="tl-title">An 8-point spec became 21 invented constraints</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>The Planner turned a short, real feature request into 21 constraints and 20 acceptance criteria — inventing cross-host lock races and distributed-coordination requirements nobody asked for.</p>
+          <div class="evidence">Fix, round one: an explicit traceability rule in <code>PLANNER_SYSTEM</code>. Fix, round two (below): a human gate, because the rule alone wasn't enough.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">3</div>
+          <div class="tl-title">Build and Verify silently diverged on an interface</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>Builder and Verifier never see each other's code by design — but a real run had them independently invent <i>different</i> shapes for the same operation (<code>review(id, {decision, approver, reason})</code> vs. <code>approve(id, approver, reason)</code>), because the contract never pinned the exact signature down.</p>
+          <div class="evidence">Fix: "EXACT INTERFACES ARE MANDATORY WHEREVER THEY MATTER" — the Planner must specify literal function signatures whenever both sides need to converge on one.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">4</div>
+          <div class="tl-title">Windows subprocess handling: npm resolution, encoding, and a 60-second timeout that hung for 89 minutes</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p><code>subprocess.run(["npm",...])</code> can't resolve <code>npm.cmd</code> without a shell; <code>text=True</code> silently used the OS codepage and crashed on real UTF-8 output. Worse: on Windows, <code>npm test</code> spawns <code>node.exe</code> as a grandchild that survives a timeout's kill signal and keeps stdout/stderr pipes open — a "60-second timeout" once hung for <b>89 minutes</b> before it was found.</p>
+          <div class="evidence">Fix: <code>shutil.which()</code> resolution, explicit UTF-8 decoding, and a real process-tree kill (<code>taskkill /T /F</code>) with a polling wait loop instead of a single blocking <code>communicate(timeout=)</code>.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">5</div>
+          <div class="tl-title">The Verifier's own retries accumulated instead of converging</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>The Builder gets shown the real, current state of the project before every retry; the Verifier didn't — so a retry invented a new test filename instead of fixing the old one. Four abandoned generations of a test suite, each spinning up its own mock server, ended up running <i>simultaneously</i> under Node's default test discovery. A "60-second" test run genuinely could not finish even at 180 seconds.</p>
+          <div class="evidence">Fix: gave <code>verify</code> the same current-file visibility <code>build</code> already had, and made <code>test/</code> writes fully replace the directory instead of adding to it — a retry's response is now the complete, authoritative state of its own test suite.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">6</div>
+          <div class="tl-title">No request timeout — a call once hung 13+ minutes with no ceiling in sight</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>The SDK's own default timeout (roughly 10 minutes, times its own retries) meant a genuinely hung network call could stall the whole harness for over 20 minutes before anyone could be sure it wasn't just slow.</p>
+          <div class="evidence">Fix: an explicit 300-second request ceiling, chosen with real headroom above every observed real call's duration.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">7</div>
+          <div class="tl-title">A run that was "cancelled" kept running</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>The harness had no real cancel mechanism — closing a client didn't stop server-side execution. A mistakenly-submitted run kept executing after being believed stopped, and overwrote a proven, live-verified test suite. It was recovered from durable session state, but it was close.</p>
+          <div class="evidence">Fix: cooperative cancellation (<code>runtime.py</code>) checked at the walker's node boundary, inside the LLM streaming loop chunk-by-chunk, and inside the test runner's wait loop — proven live in two later runs, once mid-streaming-call.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">8</div>
+          <div class="tl-title">No secrets boundary, and no way to tell a quota problem from a bad implementation</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>Two structural gaps found in the same review: every role sent full file contents and the raw feature request to the model with zero scanning, and every inference-layer failure — a real rate limit, a blocked model, a genuine bug — surfaced as the same generic error string.</p>
+          <div class="evidence">Fix: <code>redaction.py</code> scrubs credential-shaped content before every call (proven live — a real API call echoed back only the redaction placeholder, never the planted secret). <code>llm_client.InferenceError</code> and its subclasses (<code>ModelBlocked</code> / <code>AllowanceExhausted</code> / <code>CapacityInsufficient</code>) now classify provider failures from the real SDK exception types.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">9</div>
+          <div class="tl-title">The test suite had been quietly polluting the real, shared memory file</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>Adding recurrence-tracking to the Calibrator's rolling patterns revealed something the old, duller dedup logic had been masking: the test suite had been writing to the <i>real</i> <code>AGENTS.md</code> the whole time. One pattern showed <code>seen=22</code> — 22 silent writes from test runs, invisible until a better counter made the number visible.</p>
+          <div class="evidence">Fix: isolated <code>memory.MEMORY_PATH</code> in the autouse test fixture, and cleaned the real file back to its legitimate history.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">10</div>
+          <div class="tl-title">A live, unscripted Builder wrote its own test file</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>The Builder is told it never <i>sees</i> test code — but nothing stopped it from <i>writing</i> one. A real run had it return a self-authored test alongside its implementation. It happened to be overwritten by the Verifier's own file through a filename coincidence — a Builder grading its own work was one different filename away from actually happening.</p>
+          <div class="evidence">Fix: <code>_handle_build</code> now structurally strips any <code>test/</code>-path file from a Builder's output — from disk <i>and</i> from the persisted record — before <code>Arbiter</code>/<code>Reviewer</code> ever see it.</div>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-num">11</div>
+          <div class="tl-title">A GitHub token mistake cost two debugging rounds it didn't need to</div>
+          <span class="tag found">found</span><span class="tag fixed">fixed</span>
+          <p>Fine-grained GitHub PATs don't have a separate "Releases" permission — it's bundled under "Contents," which wasn't known going in. Then a token thought to be correctly scoped turned out to still be read-only, only discovered when a real <code>publish</code> call failed.</p>
+          <div class="evidence">Fix: <code>tools/check_github_token.py</code> — a standalone pre-flight check for exactly this, run before any integration code gets written against a new credential.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="optimizations">
+      <div class="sec-head"><span class="sec-no">§5</span><h2>Optimizations &amp; improvements</h2></div>
+      <p class="sec-intro">Every number below is measured from a real run's own event timestamps, not estimated.</p>
+
+      <h3>Concurrent build and verify</h3>
+      <p><code>build</code> and <code>verify</code> never depended on each other's output — the Verifier is deliberately never given the Builder's code. Running them on separate threads instead of in sequence was proven twice, live:</p>
+      <div class="measure">
+        <div class="m">Run 1<br><b>~38% faster</b><br>started 4ms apart</div>
+        <div class="m">Run 2<br><b>~19% faster</b><br>started 3.6ms apart</div>
+      </div>
+
+      <h3>Per-role model tiers</h3>
+      <p>All seven roles shared one model regardless of task weight. Roles now route to one of three capability/cost tiers based on what the task actually needs:</p>
+      <div class="overflow">
+      <table class="components">
+        <tr><th>Tier</th><th>Roles</th><th>Why</th></tr>
+        <tr><td>Flagship</td><td>planner, builder, verifier, reviewer</td><td>Cascading, hard-to-undo judgment — a bad contract or verdict ripples through the whole run.</td></tr>
+        <tr><td>Mid</td><td>arbiter, review_arbiter</td><td>A bounded, enum-shaped classification with real stakes but a narrower task than open-ended architecture.</td></tr>
+        <tr><td>Lightweight</td><td>calibrator</td><td>Extracting a handful of short strings from a summary — the lowest-stakes call in the harness.</td></tr>
+      </table>
+      </div>
+
+      <h3>Streaming, live output, and honest truncation</h3>
+      <p>Every call now streams — both to power the dashboard's live per-node output and to make cancellation responsive mid-call, not just between nodes. Separately, the two places context used to truncate silently (a 200-file project listing, a 150KB file-content cap) now say so explicitly in the prompt, and prioritize the contract's own named files ahead of whatever a directory walk happens to find first.</p>
+
+      <h3>Cost visibility and a stuck-run signal</h3>
+      <p>Tokens were tracked per node but never summed — a per-run rollup now exists everywhere a session is inspected. A new detector flags when the <i>same</i> retry budget exhausts more than once across a session's history — checked against real history, it immediately flagged the one session that actually deserved it (three separate budgets, one exhausting eight times) and stayed quiet on a session that needed a couple of legitimate grants and converged fine.</p>
+
+      <h3>Smaller, cheaper cleanups</h3>
+      <ul>
+        <li>A redundant second test-suite run (extracting structured failure detail) now checks <code>package.json</code>'s test script first, and skips itself entirely for a project that isn't using Node's built-in runner.</li>
+        <li>Prompts moved from hardcoded strings in <code>agents.py</code> into their own files, loaded fresh on every call — editing wording no longer needs a code change.</li>
+        <li><code>Session.save()</code> writes atomically (temp file, then replace) after a real <code>JSONDecodeError</code> from a reader catching a mid-write file, made more likely once background threads and concurrent nodes existed.</li>
+      </ul>
+    </section>
+
+    <section id="lessons">
+      <div class="sec-head"><span class="sec-no">§6</span><h2>What we learned</h2></div>
+      <p class="sec-intro">Three ideas kept recurring, from the first linear script to the current graph.</p>
+
+      <h3>A harness's real test suite is running it for real</h3>
+      <p>Every problem in §4 was found by operating the system against a real target and a real model — none by reading the code. Unit tests came after, as regression coverage for what live operation had already taught. That ordering isn't a shortcut around testing; it's the honest acknowledgment that an LLM's actual behavior — what it chooses to write, how two independent roles happen to diverge, what a model does under real network conditions — isn't something a scripted fake can predict in advance.</p>
+
+      <h3>Structural enforcement beats a prompt instruction, every time it's affordable</h3>
+      <p>"The Builder doesn't see test code" was a true sentence in a prompt for a long time before it was also true of the code — and the gap between those two is exactly where a live run found the Builder writing its own test file (§4.10). The same pattern repeats everywhere it mattered: path-escape prevention isn't a request not to escape the sandbox, it's a resolved-path check; the secrets boundary isn't a request not to leak, it's a scan before every call leaves the process. A rule a role merely reads is a rule it can eventually not follow.</p>
+
+      <h3>Some judgment calls belong to a person, not a second opinion from the same kind of model</h3>
+      <p>The single largest architecture change in Shipyard's history was replacing an automated "did this contract overshoot the request" check with a human gate. Not because automating it was lazy — a real, carefully-worded LLM check existed and worked much of the time — but because asking one LLM to judge whether another LLM over-elaborated is a narrower guarantee than it sounds like: both are drawing from the same kind of reasoning about what counts as reasonable scope. A human reading the same contract catches drift a same-class check sometimes won't, and costs nothing extra when the contract was already fine — it's held zero false approvals since it started.</p>
+
+      <p style="margin-top: 28px; padding: 16px 18px; background: var(--found-bg); border-radius: 6px; color: var(--found); font-size: 14.5px;">A number worth sitting with: the one session that never should have kept running (a contaminated legacy contract, retried past the point of no return) burned <b>105,154 tokens</b> — the second-highest of any session — before "start fresh" was recognized as the only real fix. The stuck-run detector in §5 exists directly because of that number.</p>
+    </section>
+
+    <section id="status">
+      <div class="sec-head"><span class="sec-no">§7</span><h2>Current status</h2></div>
+      <p class="sec-intro">Where things actually stand, and what's still open.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>Proven live</h4>
+          <p>The full graph — human gate, concurrent build/verify, real cancellation — has completed end to end on a real project, twice. A real GitHub repository has gone scan → prepare → approve → publish, with two real prereleases independently verified against the live API. A thin review console wraps the CLI by subprocess only, its full route surface exercised live against the real repo.</p>
+        </div>
+        <div class="card">
+          <h4>Still open</h4>
+          <p>The new topology's classifier/routing paths haven't been forced by a genuine live retry — both real runs so far converged on the first attempt. Redaction has fired in one deliberate live test, never in an organic run. <code>server.js</code> hasn't had the same security read-through <code>release-manager.js</code> has.</p>
+        </div>
+      </div>
+
+      <h3>Repositories</h3>
+      <ul>
+        <li><b>Shipyard</b> — the harness itself, this document's subject.</li>
+        <li><b>Release Manager</b> — the CLI + review console built through it, in its own repository (kept separate deliberately: the same test-directory-replace mechanism that fixed §4.5 would otherwise risk overwriting the CLI's own proven test suite if both lived in one project).</li>
+      </ul>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">Generated from the harness's own session records, its committed source, and the engagement that built it.</div>
+</footer>
