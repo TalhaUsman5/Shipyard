@@ -1,4 +1,4 @@
-# Software Factory
+# Shipyard
 
 A custom-built harness — not Claude Code — using an LLM (any OpenAI-compatible
 model you configure) as the orchestrating intelligence behind seven
