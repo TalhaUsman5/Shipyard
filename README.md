@@ -1,15 +1,11 @@
 # Shipyard
 
-A custom-built harness — not Claude Code — using an LLM (any OpenAI-compatible
+A custom-built harness using an LLM (any OpenAI-compatible
 model you configure) as the orchestrating intelligence behind seven
 specialized roles, plus one human checkpoint (`plan_review`) before any of
 them start writing code. You author and run the control loop yourself, in
 plain Python, so every decision the harness makes is visible to you.
 
-This is a **learning project**, scoped deliberately small: one feature per
-run, one target project at a time, no git/CI automation. Every layer is the
-simplest version that's still real — real file writes, real test runs, real
-role independence.
 
 ## What it does
 
