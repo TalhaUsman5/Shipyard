@@ -53,14 +53,20 @@ def _git(args: list, cwd: str, check: bool = True) -> subprocess.CompletedProces
     return result
 
 
-def _worktrees_root(workspace_dir: str) -> str:
-    root = os.path.join(workspace_dir, ".worktrees")
-    os.makedirs(root, exist_ok=True)
-    return root
-
-
 def _worktree_path(workspace_dir: str, project_name: str, session_id: str) -> str:
-    return os.path.join(_worktrees_root(workspace_dir), f"{project_name}__{session_id}")
+    # Deliberately a TOP-LEVEL sibling directly under workspace_dir — the
+    # same level as every real project directory — not nested one level
+    # deeper (e.g. workspace/.worktrees/<name>). A project's own code can
+    # legitimately reference another project as a sibling via a relative
+    # path (release-manager-review-ui's server.js resolves its CLI via
+    # path.resolve(__dirname, '../release-manager-v2')); nesting worktrees
+    # one level deeper breaks that resolution during a build/test run even
+    # though the same relative path works fine in the final deployed
+    # product (which runs from the real cloned repo, never a worktree).
+    # Found live: a feature request against release-manager-v2 planned a
+    # test that spawns release-manager-review-ui's server, which failed
+    # this exact way before ever reaching Build.
+    return os.path.join(workspace_dir, f"{project_name}__{session_id}")
 
 
 def _branch_name(session_id: str) -> str:

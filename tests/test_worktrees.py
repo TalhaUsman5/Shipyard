@@ -105,3 +105,24 @@ def test_ensure_repo_retrofits_a_pre_existing_ungit_project(make_repo, isolated_
     # have made it into the baseline commit, not been silently skipped.
     log = worktrees._git(["log", "--name-only", "--format="], cwd=project_root).stdout
     assert "src/greeting.js" in log
+
+
+def test_a_worktree_is_a_true_top_level_sibling_of_other_real_projects(isolated_dirs, make_repo):
+    """Regression test for a real bug: worktrees originally lived one
+    level deeper (workspace/.worktrees/<name>), which silently broke any
+    project's own code that resolves ANOTHER project as a relative
+    sibling — exactly what release-manager-review-ui's server.js does to
+    find its CLI (path.resolve(__dirname, '../release-manager-v2')).
+    A worktree must resolve '..' back to workspace/ itself, the same as
+    the project's own canonical directory does."""
+    make_repo("proj_wt_sibling")
+    other_project = os.path.join(isolated_dirs["workspace"], "some-other-real-project")
+    os.makedirs(other_project, exist_ok=True)
+
+    worktree_path = worktrees.create_worktree(
+        isolated_dirs["workspace"], os.path.join(isolated_dirs["workspace"], "proj_wt_sibling"),
+        "proj_wt_sibling", "sess_sibling_check",
+    )
+
+    resolved_sibling = os.path.normcase(os.path.abspath(os.path.join(worktree_path, "..", "some-other-real-project")))
+    assert resolved_sibling == os.path.normcase(os.path.abspath(other_project))
