@@ -23,7 +23,9 @@ from typing import Any, Optional
 import agents
 import execution
 import llm_client
+import project_lock
 import runtime
+import worktrees
 from context import project_snapshot, read_package_json
 from graph import ENTRY_NODE, MAX_TOTAL_ITERATIONS, NODE_OUTPUT_MODELS, PARALLEL_GROUPS, PHASE_GRAPH
 from memory import append_pattern, load_memory
@@ -39,8 +41,8 @@ class _Abort(Exception):
 
 def _resolve_project_path(project_path: str) -> str:
     """Resolve project_path as a name relative to workspace/, creating the
-    directory if this is a new repo. Raises ValueError if project_path is
-    absolute or would escape workspace/."""
+    directory if needed. Raises ValueError if project_path is absolute or
+    would escape workspace/."""
     if os.path.isabs(project_path):
         raise ValueError("project_path must be a name relative to workspace/, not an absolute path")
 
@@ -50,11 +52,32 @@ def _resolve_project_path(project_path: str) -> str:
     if target != workspace_real and not target.startswith(workspace_real + os.sep):
         raise ValueError(f"project_path escapes workspace/: {project_path!r}")
 
-    is_new = not os.path.isdir(target)
     os.makedirs(target, exist_ok=True)
-    if is_new:
+    # Scaffold on the absence of package.json itself, not the absence of the
+    # directory — a directory pre-seeded with files (e.g. a starter
+    # .env.example dropped in before submitting a run) already exists, so
+    # the old is_new check silently skipped this and left test_gate with no
+    # way to ever pass (real failure: session feb70199ccfd, Config-loader).
+    if not os.path.isfile(os.path.join(target, "package.json")):
         _scaffold_new_repo(target, project_path)
     return target
+
+
+def _session_status(session_id: str) -> Optional[str]:
+    data = load_session(session_id)
+    return data.get("status") if data else None
+
+
+def _resolve_worktree(project_root: str, project_path: str, session_id: str) -> str:
+    """Acquires this project's concurrency lock for session_id — raising
+    project_lock.ProjectLocked if a different, still-resumable session
+    already owns it — then returns this session's git worktree path
+    (created fresh, or reused as-is if this is a resume of the same
+    session). See worktrees.py and project_lock.py module docstrings for
+    why this combination is safe to merge with no conflict handling."""
+    project_lock.acquire(project_root, session_id, _session_status)
+    project_name = os.path.basename(project_path.rstrip("/\\")) or "factory-project"
+    return worktrees.create_worktree(WORKSPACE_DIR, project_root, project_name, session_id)
 
 
 def _scaffold_new_repo(target: str, project_path: str) -> None:
@@ -83,6 +106,7 @@ def _scaffold_new_repo(target: str, project_path: str) -> None:
 class RunContext:
     feature_request: str
     project_path: str
+    project_root: str
     memory: str
     snapshot: list
     snapshot_truncated: bool
@@ -686,10 +710,14 @@ def _build_context(session: Session) -> Optional[RunContext]:
     """Builds the RunContext a walk needs and registers this session's
     cancel Event with runtime.py. Returns None (after recording an ERROR
     event and finishing the session as "failed") if project_path can't be
-    resolved — the one init step that can fail before a walk ever starts."""
+    resolved, or if this project is locked by a different, still-active
+    session — either way, the one init step that can fail before a walk
+    ever starts. ctx.project_path is this session's own git worktree, not
+    the canonical project_root — see worktrees.py."""
     try:
-        resolved_path = _resolve_project_path(session.data["project_path"])
-    except ValueError as e:
+        project_root = _resolve_project_path(session.data["project_path"])
+        resolved_path = _resolve_worktree(project_root, session.data["project_path"], session.id)
+    except (ValueError, project_lock.ProjectLocked, worktrees.WorktreeError) as e:
         session.record_event("ERROR", data={"stage": "init", "error": str(e)})
         session.finish("failed")
         return None
@@ -698,6 +726,7 @@ def _build_context(session: Session) -> Optional[RunContext]:
     ctx = RunContext(
         feature_request=session.data["feature_request"],
         project_path=resolved_path,
+        project_root=project_root,
         memory=load_memory(),
         snapshot=snapshot,
         snapshot_truncated=snapshot_truncated,
@@ -718,6 +747,7 @@ def _execute_walk(session: Session):
     below — same walk either way, just a different calling convention for
     a synchronous caller (e.g. the test suite) versus factory.py's request
     handlers, which must never block on it."""
+    ctx = None
     try:
         ctx = _build_context(session)
         if ctx is None:
@@ -727,6 +757,26 @@ def _execute_walk(session: Session):
         except _Abort:
             pass
     finally:
+        if ctx is not None:
+            # Only a genuinely "completed" run's worktree gets merged and
+            # its lock released — every other terminal or paused status
+            # (failed, failed_needs_human, cancelled, still awaiting human
+            # review) is resumable, so the same session may still come
+            # back for this exact worktree; see project_lock.py's
+            # module docstring for why the lock must keep blocking anyone
+            # else until completion is genuinely settled.
+            if session.data.get("status") == "completed":
+                try:
+                    project_name = os.path.basename(session.data["project_path"].rstrip("/\\")) or "factory-project"
+                    worktrees.merge_worktree(WORKSPACE_DIR, ctx.project_root, project_name, session.id)
+                    project_lock.release(ctx.project_root, session.id)
+                except worktrees.WorktreeError as e:
+                    # Merge failed on an otherwise-successful run: record it
+                    # rather than losing the failure silently, and leave the
+                    # lock in place (pointing at this completed session) so
+                    # a human notices instead of a second run silently
+                    # starting against an unmerged worktree.
+                    session.record_event("ERROR", data={"stage": "worktree_merge", "error": str(e)})
         runtime.unregister_cancel_event(session.id)
         # Self-cleanup so _THREADS never grows unbounded over a long-lived
         # server process. Only remove OUR OWN entry: a same-session resume

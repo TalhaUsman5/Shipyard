@@ -1,0 +1,752 @@
+{
+  "id": "1da77212bd9f",
+  "feature_request": "Add a small sliding-window request counter as a Node.js library with no external dependencies: a Counter class that records a timestamped hit per call to record(), and a count(windowMs) method returning how many hits occurred within the last windowMs milliseconds, pruning older hits as it goes.",
+  "project_path": "worktree-evidence-demo-2",
+  "started_at": 1790039143.735598,
+  "status": "completed",
+  "current_node": "calibrate",
+  "budgets": {},
+  "budget_grants": {},
+  "nodes": {
+    "plan": {
+      "status": "succeeded",
+      "attempts": 1,
+      "output": {
+        "title": "Dependency-free sliding-window request counter",
+        "description": "Provide a package-root CommonJS Node.js library exporting a Counter class that timestamps recorded hits and counts and prunes hits using a caller-supplied sliding window.",
+        "requirements": [
+          "The package root must be consumable as `const Counter = require('.')`, with `module.exports` resolving directly to the class named `Counter` rather than to a wrapper object.",
+          "The public constructor interface must be `new Counter()` with no parameters.",
+          "Counter must expose `record(): void`; each invocation must capture one timestamp using `Date.now()` and add exactly one hit, including when multiple calls receive the same timestamp.",
+          "Counter must expose `count(windowMs: number): number`; it must capture the current time using `Date.now()` and return an integer count of retained hits whose timestamps are within the inclusive interval from `now - windowMs` through `now`.",
+          "During each `count(windowMs)` call, every retained hit with a timestamp strictly less than `now - windowMs` must be removed. A hit exactly on the lower boundary must remain and be counted.",
+          "Pruning is irreversible: a hit removed by one `count()` call must not reappear in a later count, including a later call using a larger window or an earlier clock value.",
+          "Stored hits must be evaluated individually rather than assuming timestamp order, so counting and pruning remain correct when duplicate timestamps occur or `Date.now()` moves backward.",
+          "The library and its tests must use only Node.js built-in capabilities and must not add external dependency declarations."
+        ],
+        "constraints": [
+          "The exact public arities must be `Counter.length === 0`, `Counter.prototype.record.length === 0`, and `Counter.prototype.count.length === 1`.",
+          "For `windowMs === 0`, only retained hits timestamped exactly at the current `Date.now()` value are counted; older hits are pruned and future-dated retained hits are not counted.",
+          "Behavior for arguments other than finite, non-negative numeric `windowMs` values is unspecified by this feature request and must not be relied upon by acceptance tests.",
+          "Changes must remain limited to the files named in `target_files`."
+        ],
+        "acceptance_criteria": [
+          "`require('.')` returns a class named `Counter`, and constructing it with `new Counter()` succeeds with the required constructor and method arities.",
+          "A new Counter returns numeric integer `0` from `count(windowMs)` when no hits have been recorded.",
+          "Each `record()` call returns `undefined` and contributes exactly one hit to a subsequent count when its timestamp lies inside the requested inclusive window.",
+          "Multiple hits recorded at the same timestamp are counted separately.",
+          "A hit timestamped exactly `windowMs` milliseconds before the count time is included, while a hit older by any positive amount is excluded and pruned.",
+          "A zero-duration window counts hits at the current timestamp and excludes and prunes earlier hits.",
+          "After a short-window count prunes an old hit, a later larger-window count does not recover that hit.",
+          "With controllable `Date.now()` values that are not chronological, count includes only retained timestamps in `[now - windowMs, now]`, prunes all retained timestamps below that interval regardless of storage position, and does not count future-dated retained timestamps.",
+          "The package declares no runtime or development dependencies, and `npm test` passes using the existing `node --test` script.",
+          "Time-dependent tests restore any replaced global time source and other modified process state during cleanup."
+        ],
+        "out_of_scope": [
+          "Validation or prescribed error behavior for invalid `windowMs` arguments.",
+          "ES module exports, named-export wrapper objects, or additional public Counter methods.",
+          "Concurrency, multi-process coordination, persistence, distributed counting, or performance guarantees."
+        ],
+        "target_files": [
+          "index.js",
+          "package.json",
+          "test/counter.test.js"
+        ]
+      },
+      "tokens": {
+        "input": 1452,
+        "output": 2357
+      },
+      "error": null
+    },
+    "plan_review": {
+      "status": "succeeded",
+      "attempts": 1,
+      "output": {
+        "approved": true,
+        "feedback": null,
+        "reviewed_by": "operator"
+      },
+      "tokens": null,
+      "error": null
+    },
+    "build": {
+      "status": "succeeded",
+      "attempts": 2,
+      "output": {
+        "files": [
+          {
+            "path": "index.js",
+            "content": "'use strict';\n\nclass Counter {\n  #hits;\n\n  constructor() {\n    this.#hits = [];\n  }\n\n  record() {\n    this.#hits.push(Date.now());\n  }\n\n  count(windowMs) {\n    const now = Date.now();\n    const lowerBoundary = now - windowMs;\n    const retained = [];\n    let count = 0;\n\n    for (const timestamp of this.#hits) {\n      if (timestamp < lowerBoundary) {\n        continue;\n      }\n\n      retained.push(timestamp);\n      if (timestamp <= now) {\n        count += 1;\n      }\n    }\n\n    this.#hits = retained;\n    return count;\n  }\n}\n\nmodule.exports = Counter;\n"
+          },
+          {
+            "path": "package.json",
+            "content": "{\n  \"name\": \"worktree-evidence-demo-2\",\n  \"version\": \"0.0.0\",\n  \"private\": true,\n  \"scripts\": {\n    \"test\": \"node --test\"\n  }\n}\n"
+          }
+        ],
+        "notes": "Implemented the dependency-free CommonJS Counter with inclusive sliding-window counting, individual timestamp evaluation, irreversible pruning, duplicate support, and deterministic built-in Node.js tests."
+      },
+      "tokens": {
+        "input": 2240,
+        "output": 1556
+      },
+      "error": null
+    },
+    "verify": {
+      "status": "succeeded",
+      "attempts": 2,
+      "output": {
+        "files": [
+          {
+            "path": "test/counter.test.js",
+            "content": "'use strict';\n\nconst test = require('node:test');\nconst assert = require('node:assert/strict');\nconst fs = require('node:fs');\nconst path = require('node:path');\n\nconst projectRoot = path.resolve(__dirname, '..');\n\nfunction loadCounter() {\n  return require(projectRoot);\n}\n\nfunction mockNow(t, values) {\n  const originalNow = Date.now;\n  let calls = 0;\n\n  Date.now = () => {\n    if (calls >= values.length) {\n      throw new Error(`Date.now called more than the expected ${values.length} time(s)`);\n    }\n    return values[calls++];\n  };\n\n  t.after(() => {\n    Date.now = originalNow;\n  });\n\n  return {\n    calls() {\n      return calls;\n    }\n  };\n}\n\ntest('package root directly exports the Counter class with exact public arities', () => {\n  const Counter = loadCounter();\n\n  assert.equal(typeof Counter, 'function');\n  assert.equal(Counter.name, 'Counter');\n  assert.match(Function.prototype.toString.call(Counter), /^class\\s+Counter\\b/);\n  assert.equal(Counter.length, 0);\n  assert.equal(Counter.prototype.record.length, 0);\n  assert.equal(Counter.prototype.count.length, 1);\n\n  const counter = new Counter();\n  assert.ok(counter instanceof Counter);\n  assert.throws(() => Counter(), TypeError, 'Counter must be a class requiring new');\n});\n\ntest('a new counter returns integer zero and count captures time once', (t) => {\n  const Counter = loadCounter();\n  const clock = mockNow(t, [1234]);\n  const counter = new Counter();\n\n  const result = counter.count(500);\n  assert.strictEqual(result, 0);\n  assert.equal(typeof result, 'number');\n  assert.equal(Number.isInteger(result), true);\n  assert.equal(clock.calls(), 1);\n});\n\ntest('record returns undefined, captures one timestamp, and preserves duplicate hits', (t) => {\n  const Counter = loadCounter();\n  const clock = mockNow(t, [100, 100, 100]);\n  const counter = new Counter();\n\n  assert.strictEqual(counter.record(), undefined);\n  assert.equal(clock.calls(), 1);\n  assert.strictEqual(counter.record(), undefined);\n  assert.equal(clock.calls(), 2);\n\n  assert.strictEqual(counter.count(0), 2);\n  assert.equal(clock.calls(), 3, 'count must capture the current time exactly once');\n});\n\ntest('the inclusive lower boundary is counted while a hit one millisecond older is pruned', (t) => {\n  const Counter = loadCounter();\n  mockNow(t, [99, 100, 110, 99]);\n  const counter = new Counter();\n\n  counter.record(); // Older than the eventual lower boundary by 1ms.\n  counter.record(); // Exactly on the eventual lower boundary.\n\n  assert.strictEqual(counter.count(10), 1);\n\n  // At this earlier time, the 99ms hit would be in range if it had not been\n  // irreversibly pruned. The retained 100ms hit is future-dated and excluded.\n  assert.strictEqual(counter.count(100), 0);\n});\n\ntest('a zero-duration window counts only current hits, prunes older hits, and retains future hits', (t) => {\n  const Counter = loadCounter();\n  mockNow(t, [49, 50, 51, 50, 51, 49]);\n  const counter = new Counter();\n\n  counter.record();\n  counter.record();\n  counter.record();\n\n  assert.strictEqual(counter.count(0), 1, 'only the hit at time 50 is current');\n  assert.strictEqual(counter.count(0), 1, 'the future hit at 51 must have remained retained');\n  assert.strictEqual(\n    counter.count(100),\n    0,\n    'the hit at 49 was pruned and the retained 50/51 hits are future-dated'\n  );\n});\n\ntest('pruning by a short window is irreversible when a later window is larger', (t) => {\n  const Counter = loadCounter();\n  mockNow(t, [0, 95, 100, 100]);\n  const counter = new Counter();\n\n  counter.record();\n  counter.record();\n\n  assert.strictEqual(counter.count(10), 1);\n  assert.strictEqual(counter.count(1000), 1, 'the pruned hit must not reappear');\n});\n\ntest('nonchronological timestamps are evaluated individually regardless of storage position', (t) => {\n  const Counter = loadCounter();\n  mockNow(t, [100, 10, 80, 70, 20, 100]);\n  const counter = new Counter();\n\n  // Deliberately store an old timestamp between two future timestamps.\n  counter.record(); // 100\n  counter.record(); // 10\n  counter.record(); // 80\n\n  assert.strictEqual(\n    counter.count(20),\n    0,\n    'at time 70, timestamps 80 and 100 are future-dated and 10 must be pruned'\n  );\n  assert.strictEqual(\n    counter.count(20),\n    0,\n    'moving back to time 20 must not recover the previously pruned timestamp 10'\n  );\n  assert.strictEqual(\n    counter.count(30),\n    2,\n    'future-dated retained hits must become countable when time reaches them'\n  );\n});\n\ntest('package declares no external dependencies and retains the node test script', () => {\n  const packagePath = path.join(projectRoot, 'package.json');\n  const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));\n\n  for (const field of [\n    'dependencies',\n    'devDependencies',\n    'optionalDependencies',\n    'peerDependencies'\n  ]) {\n    assert.deepStrictEqual(pkg[field] || {}, {}, `${field} must contain no declarations`);\n  }\n\n  assert.equal(pkg.scripts && pkg.scripts.test, 'node --test');\n});\n"
+          }
+        ],
+        "notes": "Adversarial coverage includes direct class export and arities, exact time capture, duplicate timestamps, inclusive boundaries, irreversible pruning, zero windows, future timestamps, backward clock movement, unordered storage, and dependency metadata."
+      },
+      "tokens": {
+        "input": 1444,
+        "output": 3082
+      },
+      "error": null
+    },
+    "test_gate": {
+      "status": "succeeded",
+      "attempts": 1,
+      "output": {
+        "passed": true,
+        "returncode": 0,
+        "stdout": "\n> worktree-evidence-demo-2@0.0.0 test\n> node --test\n\n\u2714 package root directly exports the Counter class with exact public arities (16.3755ms)\n\u2714 a new counter returns integer zero and count captures time once (0.4576ms)\n\u2714 record returns undefined, captures one timestamp, and preserves duplicate hits (0.7216ms)\n\u2714 the inclusive lower boundary is counted while a hit one millisecond older is pruned (0.1825ms)\n\u2714 a zero-duration window counts only current hits, prunes older hits, and retains future hits (0.198ms)\n\u2714 pruning by a short window is irreversible when a later window is larger (0.1919ms)\n\u2714 nonchronological timestamps are evaluated individually regardless of storage position (0.1477ms)\n\u2714 package declares no external dependencies and retains the node test script (0.6819ms)\n\u2139 tests 8\n\u2139 suites 0\n\u2139 pass 8\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 108.938\n",
+        "stderr": "",
+        "structured": {}
+      },
+      "tokens": null,
+      "error": null
+    },
+    "review": {
+      "status": "succeeded",
+      "attempts": 1,
+      "output": {
+        "approved": true,
+        "issues": [],
+        "summary": "Implementation cleanly satisfies the contract: direct CommonJS class export, exact public arities, single timestamp capture per operation, duplicate preservation, inclusive-window counting, individual unordered-hit evaluation, irreversible pruning, and no external dependencies. Tests provide strong deterministic coverage and restore the mocked global clock."
+      },
+      "tokens": {
+        "input": 3689,
+        "output": 219
+      },
+      "error": null
+    },
+    "review_gate": {
+      "status": "succeeded",
+      "attempts": 1,
+      "output": {
+        "issues": [],
+        "summary": "Implementation cleanly satisfies the contract: direct CommonJS class export, exact public arities, single timestamp capture per operation, duplicate preservation, inclusive-window counting, individual unordered-hit evaluation, irreversible pruning, and no external dependencies. Tests provide strong deterministic coverage and restore the mocked global clock."
+      },
+      "tokens": null,
+      "error": null
+    },
+    "calibrate": {
+      "status": "succeeded",
+      "attempts": 1,
+      "output": {
+        "patterns": [
+          "When a sliding-window counter encounters future-dated retained hits, prune only timestamps below the lower boundary; retain future hits without counting them so they can become countable when the clock advances.",
+          "Use a finite scripted clock that throws on unexpected Date.now calls to verify each operation samples time the required number of times, and restore the global clock in test cleanup."
+        ]
+      },
+      "tokens": {
+        "input": 8022,
+        "output": 596
+      },
+      "error": null
+    }
+  },
+  "events": [
+    {
+      "seq": 0,
+      "type": "GRAPH_SNAPSHOT",
+      "node_id": null,
+      "timestamp": 1790039143.7379966,
+      "data": {
+        "entry_node": "plan",
+        "max_total_iterations": 140,
+        "nodes": {
+          "plan": {
+            "id": "plan",
+            "kind": "work",
+            "next": "plan_review",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "plan_review": {
+            "id": "plan_review",
+            "kind": "human_gate",
+            "next": "build",
+            "on_fail": {
+              "target": "plan",
+              "reset": [
+                "plan"
+              ],
+              "budget_key": null,
+              "max_uses": null
+            },
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "build": {
+            "id": "build",
+            "kind": "work",
+            "next": "test_gate",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "verify": {
+            "id": "verify",
+            "kind": "work",
+            "next": "test_gate",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "test_gate": {
+            "id": "test_gate",
+            "kind": "gate",
+            "next": "review",
+            "on_fail": {
+              "target": "arbiter",
+              "reset": [],
+              "budget_key": null,
+              "max_uses": null
+            },
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "arbiter": {
+            "id": "arbiter",
+            "kind": "classifier",
+            "next": null,
+            "on_fail": null,
+            "routes": {
+              "bug": {
+                "target": "build",
+                "reset": [
+                  "build"
+                ],
+                "budget_key": "build_retry",
+                "max_uses": 2
+              },
+              "noise": {
+                "target": "test_gate",
+                "reset": [],
+                "budget_key": "build_retry",
+                "max_uses": 2
+              },
+              "spec_gap": {
+                "target": "plan",
+                "reset": [
+                  "plan",
+                  "build",
+                  "verify"
+                ],
+                "budget_key": "plan_retry",
+                "max_uses": 1
+              },
+              "ambiguity": {
+                "target": "plan",
+                "reset": [
+                  "plan",
+                  "build",
+                  "verify"
+                ],
+                "budget_key": "ambiguity_retry",
+                "max_uses": 1
+              },
+              "test_gap": {
+                "target": "verify",
+                "reset": [
+                  "verify"
+                ],
+                "budget_key": "test_retry",
+                "max_uses": 1
+              }
+            },
+            "fatal_on_error": true
+          },
+          "review": {
+            "id": "review",
+            "kind": "work",
+            "next": "review_gate",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "review_gate": {
+            "id": "review_gate",
+            "kind": "gate",
+            "next": "calibrate",
+            "on_fail": {
+              "target": "review_arbiter",
+              "reset": [],
+              "budget_key": null,
+              "max_uses": null
+            },
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "review_arbiter": {
+            "id": "review_arbiter",
+            "kind": "classifier",
+            "next": null,
+            "on_fail": null,
+            "routes": {
+              "implementation_gap": {
+                "target": "build",
+                "reset": [
+                  "build",
+                  "review"
+                ],
+                "budget_key": "review_retry",
+                "max_uses": 2
+              },
+              "scope_creep": {
+                "target": "plan",
+                "reset": [
+                  "plan",
+                  "build",
+                  "verify",
+                  "review"
+                ],
+                "budget_key": "scope_retry",
+                "max_uses": 2
+              },
+              "test_gap": {
+                "target": "verify",
+                "reset": [
+                  "verify",
+                  "review"
+                ],
+                "budget_key": "test_retry",
+                "max_uses": 1
+              }
+            },
+            "fatal_on_error": true
+          },
+          "calibrate": {
+            "id": "calibrate",
+            "kind": "work",
+            "next": null,
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": false
+          }
+        }
+      }
+    },
+    {
+      "seq": 1,
+      "type": "NODE_STARTED",
+      "node_id": "plan",
+      "timestamp": 1790039144.0384755,
+      "data": {}
+    },
+    {
+      "seq": 2,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "plan",
+      "timestamp": 1790039176.4886057,
+      "data": {
+        "tokens": {
+          "input": 1452,
+          "output": 2357
+        }
+      }
+    },
+    {
+      "seq": 3,
+      "type": "NODE_STARTED",
+      "node_id": "plan_review",
+      "timestamp": 1790039176.4911475,
+      "data": {}
+    },
+    {
+      "seq": 4,
+      "type": "AWAITING_HUMAN_REVIEW",
+      "node_id": "plan_review",
+      "timestamp": 1790039176.4928386,
+      "data": {}
+    },
+    {
+      "seq": 5,
+      "type": "HUMAN_REVIEW_SUBMITTED",
+      "node_id": "plan_review",
+      "timestamp": 1790039202.2004266,
+      "data": {
+        "approved": true,
+        "reviewed_by": "operator"
+      }
+    },
+    {
+      "seq": 6,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "plan_review",
+      "timestamp": 1790039202.2054229,
+      "data": {
+        "tokens": null
+      }
+    },
+    {
+      "seq": 7,
+      "type": "NODE_STARTED",
+      "node_id": "build",
+      "timestamp": 1790039202.2074363,
+      "data": {}
+    },
+    {
+      "seq": 8,
+      "type": "NODE_STARTED",
+      "node_id": "verify",
+      "timestamp": 1790039202.2092514,
+      "data": {}
+    },
+    {
+      "seq": 9,
+      "type": "NODE_CANCELLED",
+      "node_id": "build",
+      "timestamp": 1790039209.1568923,
+      "data": {
+        "error": "cancelled during streaming call (session='1da77212bd9f')"
+      }
+    },
+    {
+      "seq": 10,
+      "type": "RUN_FINISHED",
+      "node_id": null,
+      "timestamp": 1790039209.159474,
+      "data": {
+        "status": "cancelled"
+      }
+    },
+    {
+      "seq": 11,
+      "type": "RUN_RESUMED",
+      "node_id": null,
+      "timestamp": 1790039222.3556178,
+      "data": {}
+    },
+    {
+      "seq": 12,
+      "type": "GRAPH_SNAPSHOT",
+      "node_id": null,
+      "timestamp": 1790039222.3576245,
+      "data": {
+        "entry_node": "plan",
+        "max_total_iterations": 140,
+        "nodes": {
+          "plan": {
+            "id": "plan",
+            "kind": "work",
+            "next": "plan_review",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "plan_review": {
+            "id": "plan_review",
+            "kind": "human_gate",
+            "next": "build",
+            "on_fail": {
+              "target": "plan",
+              "reset": [
+                "plan"
+              ],
+              "budget_key": null,
+              "max_uses": null
+            },
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "build": {
+            "id": "build",
+            "kind": "work",
+            "next": "test_gate",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "verify": {
+            "id": "verify",
+            "kind": "work",
+            "next": "test_gate",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "test_gate": {
+            "id": "test_gate",
+            "kind": "gate",
+            "next": "review",
+            "on_fail": {
+              "target": "arbiter",
+              "reset": [],
+              "budget_key": null,
+              "max_uses": null
+            },
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "arbiter": {
+            "id": "arbiter",
+            "kind": "classifier",
+            "next": null,
+            "on_fail": null,
+            "routes": {
+              "bug": {
+                "target": "build",
+                "reset": [
+                  "build"
+                ],
+                "budget_key": "build_retry",
+                "max_uses": 2
+              },
+              "noise": {
+                "target": "test_gate",
+                "reset": [],
+                "budget_key": "build_retry",
+                "max_uses": 2
+              },
+              "spec_gap": {
+                "target": "plan",
+                "reset": [
+                  "plan",
+                  "build",
+                  "verify"
+                ],
+                "budget_key": "plan_retry",
+                "max_uses": 1
+              },
+              "ambiguity": {
+                "target": "plan",
+                "reset": [
+                  "plan",
+                  "build",
+                  "verify"
+                ],
+                "budget_key": "ambiguity_retry",
+                "max_uses": 1
+              },
+              "test_gap": {
+                "target": "verify",
+                "reset": [
+                  "verify"
+                ],
+                "budget_key": "test_retry",
+                "max_uses": 1
+              }
+            },
+            "fatal_on_error": true
+          },
+          "review": {
+            "id": "review",
+            "kind": "work",
+            "next": "review_gate",
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "review_gate": {
+            "id": "review_gate",
+            "kind": "gate",
+            "next": "calibrate",
+            "on_fail": {
+              "target": "review_arbiter",
+              "reset": [],
+              "budget_key": null,
+              "max_uses": null
+            },
+            "routes": {},
+            "fatal_on_error": true
+          },
+          "review_arbiter": {
+            "id": "review_arbiter",
+            "kind": "classifier",
+            "next": null,
+            "on_fail": null,
+            "routes": {
+              "implementation_gap": {
+                "target": "build",
+                "reset": [
+                  "build",
+                  "review"
+                ],
+                "budget_key": "review_retry",
+                "max_uses": 2
+              },
+              "scope_creep": {
+                "target": "plan",
+                "reset": [
+                  "plan",
+                  "build",
+                  "verify",
+                  "review"
+                ],
+                "budget_key": "scope_retry",
+                "max_uses": 2
+              },
+              "test_gap": {
+                "target": "verify",
+                "reset": [
+                  "verify",
+                  "review"
+                ],
+                "budget_key": "test_retry",
+                "max_uses": 1
+              }
+            },
+            "fatal_on_error": true
+          },
+          "calibrate": {
+            "id": "calibrate",
+            "kind": "work",
+            "next": null,
+            "on_fail": null,
+            "routes": {},
+            "fatal_on_error": false
+          }
+        }
+      }
+    },
+    {
+      "seq": 13,
+      "type": "NODE_STARTED",
+      "node_id": "build",
+      "timestamp": 1790039222.3639095,
+      "data": {}
+    },
+    {
+      "seq": 14,
+      "type": "NODE_STARTED",
+      "node_id": "verify",
+      "timestamp": 1790039222.3670895,
+      "data": {}
+    },
+    {
+      "seq": 15,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "build",
+      "timestamp": 1790039240.7524915,
+      "data": {
+        "tokens": {
+          "input": 2240,
+          "output": 1556
+        },
+        "files_written": [
+          "index.js",
+          "package.json"
+        ],
+        "dropped_test_paths": [
+          "test/counter.test.js"
+        ]
+      }
+    },
+    {
+      "seq": 16,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "verify",
+      "timestamp": 1790039260.2368205,
+      "data": {
+        "tokens": {
+          "input": 1444,
+          "output": 3082
+        },
+        "files_written": [
+          "test/counter.test.js"
+        ]
+      }
+    },
+    {
+      "seq": 17,
+      "type": "NODE_STARTED",
+      "node_id": "test_gate",
+      "timestamp": 1790039260.239437,
+      "data": {}
+    },
+    {
+      "seq": 18,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "test_gate",
+      "timestamp": 1790039260.7697673,
+      "data": {
+        "tokens": null
+      }
+    },
+    {
+      "seq": 19,
+      "type": "NODE_STARTED",
+      "node_id": "review",
+      "timestamp": 1790039260.7718697,
+      "data": {}
+    },
+    {
+      "seq": 20,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "review",
+      "timestamp": 1790039265.4074264,
+      "data": {
+        "tokens": {
+          "input": 3689,
+          "output": 219
+        }
+      }
+    },
+    {
+      "seq": 21,
+      "type": "NODE_STARTED",
+      "node_id": "review_gate",
+      "timestamp": 1790039265.409888,
+      "data": {}
+    },
+    {
+      "seq": 22,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "review_gate",
+      "timestamp": 1790039265.4119337,
+      "data": {
+        "tokens": null
+      }
+    },
+    {
+      "seq": 23,
+      "type": "NODE_STARTED",
+      "node_id": "calibrate",
+      "timestamp": 1790039265.4137661,
+      "data": {}
+    },
+    {
+      "seq": 24,
+      "type": "NODE_SUCCEEDED",
+      "node_id": "calibrate",
+      "timestamp": 1790039274.3298817,
+      "data": {
+        "tokens": {
+          "input": 8022,
+          "output": 596
+        }
+      }
+    },
+    {
+      "seq": 25,
+      "type": "RUN_FINISHED",
+      "node_id": null,
+      "timestamp": 1790039274.332707,
+      "data": {
+        "status": "completed"
+      }
+    }
+  ],
+  "pending_reviews": {},
+  "ended_at": 1790039274.332702
+}
