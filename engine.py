@@ -64,8 +64,22 @@ def _resolve_project_path(project_path: str) -> str:
 
 
 def _session_status(session_id: str) -> Optional[str]:
+    """Used by project_lock.acquire() to decide whether a lock is stale
+    and safely reclaimable. A session whose pipeline reached "completed"
+    but whose worktree never actually merged (a real incident — see
+    merge_failed below) must NOT read as reclaimable: the lock's whole
+    job is guaranteeing at most one unmerged worktree per project at a
+    time, and treating "completed" as synonymous with "safely done" let
+    a second session silently orphan the first one's real, unmerged work
+    without anyone noticing. Any string other than exactly "completed"
+    keeps blocking a new acquire, so this only needs one synthetic value."""
     data = load_session(session_id)
-    return data.get("status") if data else None
+    if not data:
+        return None
+    status = data.get("status")
+    if status == "completed" and data.get("merge_failed"):
+        return "completed_unmerged"
+    return status
 
 
 def _resolve_worktree(project_root: str, project_path: str, session_id: str) -> str:
@@ -771,11 +785,21 @@ def _execute_walk(session: Session):
                     worktrees.merge_worktree(WORKSPACE_DIR, ctx.project_root, project_name, session.id)
                     project_lock.release(ctx.project_root, session.id)
                 except worktrees.WorktreeError as e:
-                    # Merge failed on an otherwise-successful run: record it
-                    # rather than losing the failure silently, and leave the
-                    # lock in place (pointing at this completed session) so
-                    # a human notices instead of a second run silently
-                    # starting against an unmerged worktree.
+                    # Merge failed on an otherwise-successful run. Real
+                    # incident this guards against: two sessions against
+                    # release-manager-review-ui both hit exactly this (a
+                    # dirty canonical directory from manual file syncing)
+                    # and their real, tested work sat in two abandoned
+                    # worktrees, invisible, while a THIRD session's lock
+                    # acquire treated the first "completed" session as
+                    # stale and silently reclaimed it. merge_failed persists
+                    # BEFORE record_event's own save() so _session_status
+                    # (project_lock.py's staleness check) never treats this
+                    # session as safely reclaimable — the lock stays held
+                    # until a human actually resolves the real conflict,
+                    # same as failed_needs_human requires a human, not a
+                    # timer or a later session's optimism.
+                    session.data["merge_failed"] = True
                     session.record_event("ERROR", data={"stage": "worktree_merge", "error": str(e)})
         runtime.unregister_cancel_event(session.id)
         # Self-cleanup so _THREADS never grows unbounded over a long-lived

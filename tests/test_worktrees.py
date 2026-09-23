@@ -126,3 +126,37 @@ def test_a_worktree_is_a_true_top_level_sibling_of_other_real_projects(isolated_
 
     resolved_sibling = os.path.normcase(os.path.abspath(os.path.join(worktree_path, "..", "some-other-real-project")))
     assert resolved_sibling == os.path.normcase(os.path.abspath(other_project))
+
+
+def test_a_completed_but_unmerged_session_still_blocks_a_third_run(fake_agents, calls, make_repo, monkeypatch):
+    """Regression test for a real incident: two real Shipyard sessions
+    against release-manager-review-ui both completed for real, but their
+    worktree merges both failed (the canonical directory had leftover
+    uncommitted changes from manual file syncing — not simulated here,
+    just reproduced structurally by making merge_worktree raise). Because
+    project_lock.acquire() treated ANY "completed" session as safely
+    reclaimable, a later session silently reclaimed the lock and started
+    its own independent worktree — orphaning the first session's real,
+    tested work with no visible signal anywhere. _session_status must
+    report something other than "completed" for a session whose merge
+    never actually succeeded, so the lock keeps blocking until a human
+    resolves it, the same as failed_needs_human already requires."""
+    make_repo("proj_wt_unmerged")
+
+    def failing_merge(*args, **kwargs):
+        raise engine.worktrees.WorktreeError("simulated: canonical directory has uncommitted local changes")
+
+    monkeypatch.setattr(engine.worktrees, "merge_worktree", failing_merge)
+    first = engine.run_pipeline("add greet helper", "proj_wt_unmerged")
+    assert first.data["status"] == "completed"
+    assert first.data.get("merge_failed") is True
+
+    project_root = os.path.join(engine.WORKSPACE_DIR, "proj_wt_unmerged")
+    assert os.path.isfile(project_lock._lock_path(project_root)), "a failed merge must never release the lock"
+
+    second = engine.run_pipeline("add a second, unrelated feature", "proj_wt_unmerged")
+    assert second.data["status"] == "failed", "a completed-but-unmerged session must still block a new run"
+    events = sessions.load_event_log(second.id)
+    error_events = [e for e in events if e["type"] == "ERROR"]
+    assert len(error_events) == 1
+    assert "locked" in error_events[0]["data"]["error"]
