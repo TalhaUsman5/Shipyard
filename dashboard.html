@@ -243,7 +243,23 @@
 
   #reportPanel .issue { margin: 4px 0 4px 16px; }
   #reportPanel .files { color: var(--text-dim); font-size: 12px; }
-  #reportPanel pre, #nodeDetailPanel pre { white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 11.5px; background: var(--bg); border: 1px solid var(--panel-border); padding: 10px; border-radius: 6px; max-height: 260px; overflow-y: auto; }
+  #reportPanel pre { white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 11.5px; background: var(--bg); border: 1px solid var(--panel-border); padding: 10px; border-radius: 6px; max-height: 260px; overflow-y: auto; }
+  #nodeDetailPanel pre { white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 11.5px; background: var(--bg); border: 1px solid var(--panel-border); padding: 10px; border-radius: 6px; max-height: 460px; overflow-y: auto; }
+  #nodeDetailBody { min-height: 220px; }
+
+  .node-steps { list-style: none; margin: 0 0 4px; padding: 0; }
+  .node-steps li { padding: 8px 0 8px 22px; border-bottom: 1px solid var(--panel-border); position: relative; font-size: 13px; }
+  .node-steps li:last-child { border-bottom: none; }
+  .node-steps li::before { content: "→"; position: absolute; left: 0; top: 8px; color: var(--accent); font-family: var(--mono); }
+  .node-steps li b { color: var(--accent-ink); }
+  .node-steps .step-label { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); display: block; margin-bottom: 2px; }
+
+  .live-status { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); background: var(--found-bg); border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; display: flex; justify-content: space-between; gap: 10px; }
+  .live-status .dot-pulse { display:inline-block; width:7px; height:7px; border-radius:50%; background: var(--running); margin-right: 6px; animation: pulse 1.2s ease-in-out infinite; }
+
+  details.raw-output { margin-top: 10px; }
+  details.raw-output summary { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  details.raw-output summary:hover { color: var(--accent); }
 
   .empty { color: var(--text-dim); font-style: italic; }
   .section-gap { margin-top: 16px; }
@@ -901,12 +917,92 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
+function formatDuration(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
+  return `${m}m ${s}s`;
+}
+
+function lineCount(text) { return String(text || "").split("\n").length; }
+
+// Finds this node's most recent NODE_STARTED / NODE_SUCCEEDED event in the
+// durable log — real timestamps and real per-attempt extras (files_written,
+// dropped_test_paths), not something reconstructed client-side.
+function findNodeEvent(nodeId, type) {
+  const events = (state.lastData && state.lastData.events) || [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].node_id === nodeId && events[i].type === type) return events[i];
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------
+// Turns a node's real structured output into plain-language steps —
+// never a second model call asking an LLM to narrate itself (that would
+// be one more thing to verify, not less). Every sentence below is built
+// directly from a field the role actually returned, or from the walker's
+// own durable event data (dropped_test_paths, files actually written).
+// Node ids not covered here (a future graph change) fall through to the
+// generic field-by-field renderer at the bottom — never a blank panel.
+// ---------------------------------------------------------------------
+function describeNodeSteps(nodeId, output) {
+  const steps = [];
+  const succeededExtra = (findNodeEvent(nodeId, "NODE_SUCCEEDED") || {}).data || {};
+
+  if (nodeId === "plan" && output) {
+    steps.push({label: "Contract drafted", text: `<b>${escapeHtml(output.title || "(untitled)")}</b> — ${escapeHtml(output.description || "")}`});
+    steps.push({label: "Requirements", text: `${(output.requirements || []).length} requirement(s), ${(output.constraints || []).length} constraint(s), ${(output.acceptance_criteria || []).length} acceptance criterion/criteria.`});
+    if ((output.out_of_scope || []).length) steps.push({label: "Explicitly out of scope", text: escapeHtml(output.out_of_scope.join("; "))});
+    if ((output.target_files || []).length) steps.push({label: "Target files", text: escapeHtml(output.target_files.join(", "))});
+  } else if ((nodeId === "build" || nodeId === "verify") && output) {
+    const files = output.files || [];
+    const verb = nodeId === "build" ? "Wrote" : "Wrote tests:";
+    if (files.length) {
+      steps.push({label: verb, text: files.map(f => `<b>${escapeHtml(f.path)}</b> (${lineCount(f.content)} lines)`).join(", ")});
+    } else {
+      steps.push({label: verb, text: "No files in this attempt's output."});
+    }
+    if (succeededExtra.dropped_test_paths && succeededExtra.dropped_test_paths.length) {
+      steps.push({label: "Structurally blocked", text: `${succeededExtra.dropped_test_paths.length} file(s) under test/ were dropped before reaching disk — the Builder never writes its own tests, enforced in code, not just asked.`});
+    }
+    if (output.notes) steps.push({label: "Notes", text: escapeHtml(output.notes)});
+  } else if (nodeId === "test_gate" && output) {
+    steps.push({label: output.passed ? "Tests passed" : "Tests failed", text: `Real \`npm test\` run, exit code ${output.returncode ?? "—"}.`});
+    if (!output.passed && output.stderr) steps.push({label: "stderr (first 300 chars)", text: escapeHtml(String(output.stderr).slice(0, 300))});
+  } else if ((nodeId === "arbiter" || nodeId === "review_arbiter") && output) {
+    steps.push({label: `Classified as "${escapeHtml(output.classification || "?")}"`, text: escapeHtml(output.explanation || "")});
+    for (const key of ["feedback_for_builder", "feedback_for_planner", "feedback_for_verifier"]) {
+      if (output[key]) steps.push({label: key.replace(/_/g, " "), text: escapeHtml(output[key])});
+    }
+  } else if (nodeId === "review" && output) {
+    steps.push({label: output.approved ? "Approved" : "Rejected", text: escapeHtml(output.summary || "")});
+    if ((output.issues || []).length) steps.push({label: `${output.issues.length} issue(s) raised`, text: output.issues.map(escapeHtml).join("<br>")});
+  } else if (nodeId === "calibrate" && output) {
+    const patterns = output.patterns || [];
+    steps.push({label: `${patterns.length} pattern(s) recorded to memory`, text: patterns.map(escapeHtml).join("<br>") || "(none this run)"});
+  } else if (nodeId === "plan_review" && output) {
+    steps.push({label: output.approved ? "Approved by a human" : "Changes requested", text: `${escapeHtml(output.reviewed_by || "reviewer")}${output.feedback ? ": " + escapeHtml(output.feedback) : ""}`});
+  } else if (output && typeof output === "object") {
+    // Generic fallback for any node id not special-cased above.
+    for (const [k, v] of Object.entries(output)) {
+      const text = typeof v === "object" ? JSON.stringify(v) : String(v);
+      steps.push({label: k.replace(/_/g, " "), text: escapeHtml(text.length > 400 ? text.slice(0, 400) + "…" : text)});
+    }
+  }
+
+  if (!steps.length) return `<div class="empty">No structured output to summarize for this node.</div>`;
+  return `<ul class="node-steps">${steps.map(s => `<li><span class="step-label">${escapeHtml(s.label)}</span>${s.text}</li>`).join("")}</ul>`;
+}
+
 // ---------------------------------------------------------------------
 // Node detail panel — click a node to inspect it. While it's running,
-// polls /sessions/{id}/live/{nodeId} on a fast interval and shows the raw
-// text a role is streaming out right now; once it's done, just shows the
-// persisted output already sitting in the session snapshot (no need for a
-// second endpoint there).
+// polls /sessions/{id}/live/{nodeId} on a fast interval and shows a real,
+// honest live-status line (elapsed time and characters streamed so far —
+// signals that actually exist right now) plus the raw text underneath;
+// once it's done, plain-language steps built from the role's real
+// structured output lead, with the raw JSON still one click away, never
+// hidden.
 // ---------------------------------------------------------------------
 function openNodeDetail(nodeId) {
   state.detailNodeId = nodeId;
@@ -928,11 +1024,15 @@ function renderNodeDetailStatic() {
   if (!node || status === "pending") {
     body.innerHTML = `<div class="empty">Not started yet.</div>`;
   } else if (status === "running") {
-    body.innerHTML = `<div class="empty">Generating…</div><pre id="nodeDetailStream"></pre>`;
+    body.innerHTML = `
+      <div class="live-status" id="nodeDetailLiveStatus"><span><span class="dot-pulse"></span>Generating…</span><span id="nodeDetailLiveMeta">—</span></div>
+      <details class="raw-output" open><summary>Raw stream</summary><pre id="nodeDetailStream"></pre></details>`;
   } else if (status === "failed") {
-    body.innerHTML = `<div style="color:var(--failed); margin-bottom:6px;">Failed</div><pre>${escapeHtml(node.error || "")}</pre>`;
+    body.innerHTML = `<div style="color:var(--failed); margin-bottom:6px; font-family: var(--mono); font-size:12px;">FAILED</div><pre>${escapeHtml(node.error || "")}</pre>`;
   } else {
-    body.innerHTML = `<pre>${escapeHtml(JSON.stringify(node.output, null, 2))}</pre>`;
+    body.innerHTML = `
+      ${describeNodeSteps(nodeId, node.output)}
+      <details class="raw-output"><summary>Raw output (JSON)</summary><pre>${escapeHtml(JSON.stringify(node.output, null, 2))}</pre></details>`;
   }
 }
 
@@ -944,6 +1044,13 @@ async function pollDetailStream() {
     const live = await getJSON(`${API}/sessions/${id}/live/${encodeURIComponent(nodeId)}`);
     const streamEl = document.getElementById("nodeDetailStream");
     if (streamEl) streamEl.textContent = live.text || "(waiting for output…)";
+    const metaEl = document.getElementById("nodeDetailLiveMeta");
+    if (metaEl) {
+      const startedEvent = findNodeEvent(nodeId, "NODE_STARTED");
+      const elapsed = startedEvent ? (Date.now() / 1000 - startedEvent.timestamp) : null;
+      const chars = (live.text || "").length;
+      metaEl.textContent = `${elapsed !== null ? formatDuration(elapsed) + " elapsed" : ""}${chars ? ` · ${chars.toLocaleString()} characters generated so far` : ""}`;
+    }
     if (!live.running) {
       // The node finished since the last poll — stop hammering /live and
       // switch to the persisted view once the next full refresh lands.
