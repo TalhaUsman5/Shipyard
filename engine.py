@@ -23,6 +23,7 @@ from typing import Any, Optional
 import agents
 import execution
 import llm_client
+import preview
 import project_lock
 import runtime
 import worktrees
@@ -754,6 +755,15 @@ def _build_context(session: Session) -> Optional[RunContext]:
     return ctx
 
 
+def _record_preview_update(session: Session, info: dict):
+    """Called from preview.py's own background readiness-check thread,
+    potentially well after _execute_walk has already returned — session
+    is still the same in-memory object, and record_event's lock plus
+    save()'s write-then-rename make this safe to land at any time."""
+    session.data["preview"] = info
+    session.record_event("PREVIEW_UPDATED", data=info)
+
+
 def _execute_walk(session: Session):
     """The actual (potentially long-running) graph walk. Called directly
     (blocking) by run_pipeline/resume_pipeline/apply_review, or scheduled
@@ -784,6 +794,18 @@ def _execute_walk(session: Session):
                     project_name = os.path.basename(session.data["project_path"].rstrip("/\\")) or "factory-project"
                     worktrees.merge_worktree(WORKSPACE_DIR, ctx.project_root, project_name, session.id)
                     project_lock.release(ctx.project_root, session.id)
+                    # Spin the project's own server up on a fresh port so
+                    # the real, live result is reachable immediately, not
+                    # just described in the report. Never blocks: readiness
+                    # is checked on preview.py's own background thread, and
+                    # on_update is the sole channel every status it produces
+                    # (including the very first one) is reported through —
+                    # see preview.py's docstring for why this call's own
+                    # return value is deliberately unused here.
+                    preview.start_preview(
+                        ctx.project_root, project_name,
+                        on_update=lambda info: _record_preview_update(session, info),
+                    )
                 except worktrees.WorktreeError as e:
                     # Merge failed on an otherwise-successful run. Real
                     # incident this guards against: two sessions against

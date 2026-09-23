@@ -250,6 +250,10 @@
   .empty { color: var(--text-dim); font-style: italic; }
   .section-gap { margin-top: 16px; }
 
+  #previewBody a { color: var(--accent); font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  #previewBody .preview-live-dot { color: var(--succeeded); font-family: var(--mono); font-size: 11px; margin-left: 8px; white-space: nowrap; }
+  #previewBody .preview-failed { color: var(--failed); font-size: 12.5px; }
+
   footer {
     max-width: 1600px;
     margin: 8px auto 0;
@@ -309,6 +313,11 @@
       <div id="nodeDetailBody"><div class="empty">Click a node to inspect it.</div></div>
     </div>
 
+    <div class="panel section-gap" id="reportPanel">
+      <h2>Report</h2>
+      <div id="reportBody"><div class="empty">Available once the run finishes.</div></div>
+    </div>
+
   </div>
 
   <div>
@@ -343,6 +352,11 @@
         </div>
       </div>
       <div id="planReviewStatus" style="margin-top: 8px; font-size: 12px; color: var(--text-dim);"></div>
+    </div>
+
+    <div class="panel section-gap" id="previewPanel" hidden>
+      <h2>Live preview</h2>
+      <div id="previewBody"></div>
     </div>
 
     <div class="panel section-gap" id="tokensPanel">
@@ -387,11 +401,6 @@
         </div>
         <div id="resumeStatus" style="margin-top: 8px; font-size: 12px; color: var(--text-dim);"></div>
       </div>
-    </div>
-
-    <div class="panel section-gap" id="reportPanel">
-      <h2>Report</h2>
-      <div id="reportBody"><div class="empty">Available once the run finishes.</div></div>
     </div>
   </div>
 </main>
@@ -1069,6 +1078,28 @@ function stopDetailPolling() {
 // hardcoding that id, so a future human_gate needs no dashboard change
 // beyond this panel already knowing how to render a Contract.
 // ---------------------------------------------------------------------
+function renderPreviewPanel(data) {
+  const panel = document.getElementById("previewPanel");
+  const body = document.getElementById("previewBody");
+  const preview = data.preview;
+  if (!preview) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  if (preview.status === "unavailable") {
+    body.innerHTML = `<div class="empty">No npm "start" script in this project — nothing to preview.</div>`;
+  } else if (preview.status === "starting") {
+    body.innerHTML = `<div class="live-status"><span><span class="dot-pulse"></span>Starting the project's server…</span></div>`;
+  } else if (preview.status === "live") {
+    body.innerHTML = `<a href="${escapeHtml(preview.url)}" target="_blank" rel="noopener">${escapeHtml(preview.url)}</a><span class="preview-live-dot">● live</span>`;
+  } else if (preview.status === "failed") {
+    body.innerHTML = `<div class="preview-failed">Preview server failed to start${preview.reason ? ": " + escapeHtml(preview.reason) : ""}.</div>`;
+  } else {
+    panel.hidden = true;
+  }
+}
+
 function renderPlanReviewPanel(data) {
   const panel = document.getElementById("planReviewPanel");
   const awaiting = data.status === "awaiting_review" ? data.awaiting_node : null;
@@ -1204,6 +1235,7 @@ async function selectSession(id) {
   document.getElementById("nodeDetailBody").innerHTML = `<div class="empty">Click a node to inspect it.</div>`;
   document.getElementById("nodeDetailTitle").textContent = "Node detail";
   document.getElementById("planReviewPanel").hidden = true;
+  document.getElementById("previewPanel").hidden = true;
   if (!id) return;
 
   const trace = await getJSON(`${API}/sessions/${id}/trace`);
@@ -1245,6 +1277,7 @@ async function refreshOnce() {
   updateBudgets(data.budgets || {}, data.budget_grants || {}, state.graphNodes);
   updateResumePanel(data.status, state.graphNodes);
   renderPlanReviewPanel(data);
+  renderPreviewPanel(data);
   document.getElementById("cancelBtn").hidden = data.status !== "running";
 
   if (state.detailNodeId) {
@@ -1273,8 +1306,13 @@ async function refreshOnce() {
 
   const terminal = ["completed", "failed", "failed_needs_human", "cancelled"].includes(data.status);
   if (terminal) {
-    stopPolling();
     await loadReport(id);
+    // Keep polling a little past "completed" while the preview server is
+    // still coming up (see preview.py) — otherwise the panel would freeze
+    // on "Starting…" until the user manually refreshes, since a genuinely
+    // terminal session status never changes again on its own.
+    const previewSettled = !data.preview || data.preview.status !== "starting";
+    if (previewSettled) stopPolling();
   }
   return data.status;
 }
